@@ -94,6 +94,12 @@ config SND_ALOOP
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-aloop.
 
+config SND_AVB
+	tristate "Generic AVB driver"
+	select SND_PCM
+        help
+          Say 'Y' or 'M' to include support for the PCM AVB device.
+
 config SND_VIRMIDI
 	tristate "Virtual MIDI soundcard"
 	depends on SND_SEQUENCER
