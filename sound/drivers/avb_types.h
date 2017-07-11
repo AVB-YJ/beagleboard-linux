@@ -34,6 +34,10 @@
 #define MSRP_ATTRIBUTE_LEN_LISTENER_VECTOR		(8)
 #define MSRP_ATTRIBUTE_LEN_DOMAIN_VECTOR		(4)
 
+#define MSRP_MAX_FRAME_SIZE_48KHZ_AUDIO                 (80)
+
+#define MSRP_MAX_INTERVAL_FRAME_48KHZ_AUDIO             (1)
+
 #define MSRP_THREE_PACK(a, b, c) (u8)((((a * 6) + b) * 6) + c)
 #define MSRP_FOUR_PACK(a, b, c, d) (u8)((a * 64) + (b * 16) + (c * 4) + (d))
 
@@ -49,7 +53,20 @@ typedef unsigned char u8;
 
 #pragma pack(push, 1)
 
-struct msrpfirstvalue {
+struct listenermsrpfirstvalue {
+	u8 streamid[8];
+};
+
+struct talkermsrpfirstvalue {
+	u8 streamid[8];
+	u8 dataframeparams[8];
+	u16 maxFrameSize;
+	u16 maxintervalframes;
+	u8 priorityandrank;
+	u32 accumalatedlatency;
+};
+
+struct bridgemsrpfirstvalue {
 	u8 streamid[8];
 	u8 dataframeparams[8];
 	u16 maxFrameSize;
@@ -64,23 +81,43 @@ struct vectorheader {
 	u16 numberofvalues;
 };
 
-struct vectorattribute {
+struct listnervectorattribute {
 	struct vectorheader hdr;
-	struct msrpfirstvalue val;
+	struct listenermsrpfirstvalue val;
 	u8 vector[2];
 };
 
-struct mrpmsg {
+struct talkervectorattribute {
+	struct vectorheader hdr;
+	struct talkermsrpfirstvalue val;
+	u8 vector[2];
+};
+
+struct listnermrpmsg {
 	u8 attributetype;
 	u8 attributelen;
 	u16 attributelistlen;
-	struct vectorattribute attibutelist;
+	struct listnervectorattribute attibutelist;
 	u16 endmarker;
 };
 
-struct msrpdu {
+struct talkermrpmsg {
+	u8 attributetype;
+	u8 attributelen;
+	u16 attributelistlen;
+	struct talkervectorattribute attibutelist;
+	u16 endmarker;
+};
+
+struct listnermsrpdu {
 	u8 protocolversion;
-	struct mrpmsg msg;
+	struct listnermrpmsg msg;
+	u16 endmarker;
+};
+
+struct talkermsrpdu {
+	u8 protocolversion;
+	struct talkermrpmsg msg;
 	u16 endmarker;
 };
 
@@ -129,7 +166,8 @@ static int avb_hw_free(struct snd_pcm_substream *substream);
 static int avb_close(struct snd_pcm_substream *substream);
 
 static bool avb_msrp_init(struct msrp* msrp);
-static void avb_msrp_join(struct msrp* msrp);
+static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join);
+static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join);
 static void avb_msrp_listen(struct msrp* msrp);
 
 static void avbWqFn(struct work_struct *work);

@@ -210,12 +210,12 @@ static bool avb_msrp_init(struct msrp* msrp)
 	return true;
 }
 
-static void avb_msrp_join(struct msrp* msrp)
+static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 {
 	int txSize = 0;
 	int err = 0;
 	struct ethhdr *eh = (struct ethhdr *)&msrp->txBuf[0];
-	struct msrpdu *pdu = (struct msrpdu*)&msrp->txBuf[sizeof(struct ethhdr)];
+	struct talkermsrpdu *pdu = (struct talkermsrpdu*)&msrp->txBuf[sizeof(struct ethhdr)];
 
 	printk(AVB_KERN_INFO "avb_msrp_join");
 
@@ -242,7 +242,7 @@ static void avb_msrp_join(struct msrp* msrp)
 	pdu->protocolversion = 0;
 	pdu->msg.attributetype = MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR;
 	pdu->msg.attributelen  = MSRP_ATTRIBUTE_LEN_TALKER_ADVERTISE_VECTOR;
-	pdu->msg.attributelistlen = sizeof(struct vectorattribute);
+	pdu->msg.attributelistlen = sizeof(struct talkervectorattribute);
 
 	pdu->msg.attibutelist.hdr.numberofvalues = 1;
 	pdu->msg.attibutelist.val.streamid[0] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[0];
@@ -254,16 +254,96 @@ static void avb_msrp_join(struct msrp* msrp)
 	pdu->msg.attibutelist.val.streamid[6] = 0;
 	pdu->msg.attibutelist.val.streamid[7] = 1;
 
-	pdu->msg.endmarker = 0;
+	pdu->msg.attibutelist.val.dataframeparams[0] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[1] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[2] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[3] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[4] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[5] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[6] = 0;
+	pdu->msg.attibutelist.val.dataframeparams[7] = 0;
 
-	txSize = sizeof(struct ethhdr) + sizeof(struct msrpdu);
+	pdu->msg.attibutelist.val.maxFrameSize = MSRP_MAX_FRAME_SIZE_48KHZ_AUDIO;
+	pdu->msg.attibutelist.val.maxintervalframes = MSRP_MAX_INTERVAL_FRAME_48KHZ_AUDIO;
+	pdu->msg.attibutelist.val.priorityandrank = 0;
+	pdu->msg.attibutelist.val.accumalatedlatency = 0;
+
+	pdu->msg.attibutelist.vector[0] = MSRP_THREE_PACK(0, 0, 0);
+	pdu->msg.attibutelist.vector[1] = MSRP_FOUR_PACK(0, 0, 0, 0);
+
+	pdu->msg.endmarker = 0;
+	pdu->endmarker = 0;
+
+	txSize = sizeof(struct ethhdr) + sizeof(struct talkermsrpdu);
 
 	msrp->txiov.iov_base = msrp->txBuf;
 	msrp->txiov.iov_len = txSize;
 	iov_iter_init(&msrp->txMsgHdr.msg_iter, WRITE | ITER_KVEC, &msrp->txiov, 1, txSize);
 
 	if ((err = sock_sendmsg(msrp->sock, &msrp->txMsgHdr)) <= 0) {
-		printk(KERN_WARNING "avb_msrp_join Socket transmission fails %d \n", err);
+		printk(KERN_WARNING "avb_msrp_talkerdeclarations Socket transmission fails %d \n", err);
+		return;
+	}
+}
+
+static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join)
+{
+	int txSize = 0;
+	int err = 0;
+	struct ethhdr *eh = (struct ethhdr *)&msrp->txBuf[0];
+	struct listnermsrpdu *pdu = (struct listnermsrpdu*)&msrp->txBuf[sizeof(struct ethhdr)];
+
+	printk(AVB_KERN_INFO "avb_msrp_join");
+
+	/* Initialize it */
+	memset(msrp->txBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+
+	/* Fill in the Ethernet header */
+	eh->h_dest[0] = 0x01;
+	eh->h_dest[1] = 0x80;
+	eh->h_dest[2] = 0xC2;
+	eh->h_dest[3] = 0x00;
+	eh->h_dest[4] = 0x00;
+	eh->h_dest[5] = 0x0E;
+	eh->h_source[0] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[0];
+	eh->h_source[1] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[1];
+	eh->h_source[2] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[2];
+	eh->h_source[3] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[3];
+	eh->h_source[4] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[4];
+	eh->h_source[5] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[5];
+
+	/* Fill in Ethertype field */
+	eh->h_proto = htons(ETH_P_1588);
+
+	pdu->protocolversion = 0;
+	pdu->msg.attributetype = MSRP_ATTRIBUTE_TYPE_LISTENER_VECTOR;
+	pdu->msg.attributelen  = MSRP_ATTRIBUTE_LEN_LISTENER_VECTOR;
+	pdu->msg.attributelistlen = sizeof(struct listnervectorattribute);
+
+	pdu->msg.attibutelist.hdr.numberofvalues = 1;
+	pdu->msg.attibutelist.val.streamid[0] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[0];
+	pdu->msg.attibutelist.val.streamid[1] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[1];
+	pdu->msg.attibutelist.val.streamid[2] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[2];
+	pdu->msg.attibutelist.val.streamid[3] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[3];
+	pdu->msg.attibutelist.val.streamid[4] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[4];
+	pdu->msg.attibutelist.val.streamid[5] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[5];
+	pdu->msg.attibutelist.val.streamid[6] = 0;
+	pdu->msg.attibutelist.val.streamid[7] = 1;
+
+	pdu->msg.attibutelist.vector[0] = MSRP_THREE_PACK(0, 0, 0);
+	pdu->msg.attibutelist.vector[1] = MSRP_FOUR_PACK(0, 0, 0, 0);
+
+	pdu->msg.endmarker = 0;
+	pdu->endmarker = 0;
+
+	txSize = sizeof(struct ethhdr) + sizeof(struct listnermsrpdu);
+
+	msrp->txiov.iov_base = msrp->txBuf;
+	msrp->txiov.iov_len = txSize;
+	iov_iter_init(&msrp->txMsgHdr.msg_iter, WRITE | ITER_KVEC, &msrp->txiov, 1, txSize);
+
+	if ((err = sock_sendmsg(msrp->sock, &msrp->txMsgHdr)) <= 0) {
+		printk(KERN_WARNING "avb_msrp_listenerdeclarations Socket transmission fails %d \n", err);
 		return;
 	}
 }
@@ -271,10 +351,28 @@ static void avb_msrp_join(struct msrp* msrp)
 static void avb_msrp_listen(struct msrp* msrp)
 {
 	int err = 0;
+	struct listnermsrpdu *tpdu = (struct listnermsrpdu*)&msrp->rxBuf[sizeof(struct ethhdr)];
 
 	printk(AVB_KERN_INFO "avb_msrp_listen");
 
 	if ((err = sock_recvmsg(msrp->sock, &msrp->rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0)) > 0) {
+		if(tpdu->protocolversion != 0) {
+			printk(KERN_WARNING "avb_msrp_listen unknown protocolversion %d \n", tpdu->protocolversion);
+			return;
+		} else {
+			if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR) {
+				avb_msrp_listenerdeclarations(msrp, true);
+			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_FAILED_VECTOR) {
+			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_LISTENER_VECTOR) {
+			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_DOMAIN_VECTOR) {
+			} else {
+				printk(KERN_WARNING "avb_msrp_listen unknown attribute type %d \n", tpdu->msg.attributetype);
+				return;
+			}		
+		}
+	} else {
+		printk(KERN_WARNING "avb_msrp_listen Socket reception fails %d \n", err);
+		return;
 	}
 }
 
@@ -291,7 +389,7 @@ static void avbWqFn(struct work_struct *work)
 			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.wd, 10000);
 		}
 	} else {
-		avb_msrp_join(wd->msrp);
+		avb_msrp_talkerdeclarations(wd->msrp, true);
 		avb_msrp_listen(wd->msrp);	
 	}
 }
