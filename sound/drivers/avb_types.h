@@ -22,7 +22,7 @@
 
 #define AVB_WQ "AVBWQ"
 
-#define AVB_MSRP_ETH_FRAME_SIZE   (8192)
+#define AVB_MSRP_ETH_FRAME_SIZE                         (512)
 
 #define MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR	(1)
 #define MSRP_ATTRIBUTE_TYPE_TALKER_FAILED_VECTOR	(2)
@@ -38,9 +38,24 @@
 
 #define MSRP_MAX_INTERVAL_FRAME_48KHZ_AUDIO             (1)
 
+#define MSRP_ATTRIBUTE_EVENT_NEW                        (0)
+#define MSRP_ATTRIBUTE_EVENT_JOININ                     (1)
+#define MSRP_ATTRIBUTE_EVENT_IN                         (2)
+#define MSRP_ATTRIBUTE_EVENT_JOINMT                     (3)
+#define MSRP_ATTRIBUTE_EVENT_MT                         (4)
+#define MSRP_ATTRIBUTE_EVENT_LEAVE                      (5)
+
+#define MSRP_DECLARATION_STATE_NONE                     (0)
+#define MSRP_DECLARATION_STATE_IGNORE                   (0)
+#define MSRP_DECLARATION_STATE_ASKING_FAILED            (1)
+#define MSRP_DECLARATION_STATE_READY                    (2)
+#define MSRP_DECLARATION_STATE_READY_FAILED             (3)
+
 #define MSRP_THREE_PACK(a, b, c) (u8)((((a * 6) + b) * 6) + c)
 #define MSRP_FOUR_PACK(a, b, c, d) (u8)((a * 64) + (b * 16) + (c * 4) + (d))
 
+#define AVTP_PDU_COMMON_STREAM_HEADER_LENGTH            (24)
+#define AVTP_PDU_COMMON_CONTROL_HEADER_LENGTH           (12)
 
 typedef signed long long int s64;
 typedef signed int s32;
@@ -52,6 +67,44 @@ typedef unsigned short int u16;
 typedef unsigned char u8;
 
 #pragma pack(push, 1)
+
+struct avtPduAafPcmHdr {
+	union th {
+		struct tf {
+			u8 subType;
+			union tb1 {
+				u8 sv;		/* 1 bit stream valid indication */
+				u8 version;	/* 3 bits version */
+				u8 mr;		/* 1 bit media clock restart */
+				u8 rsv;		/* 2 bits reserved */
+				u8 tsValid;	/* 1 bit timestamp valid */
+			} b1;
+			u8 seqNo;
+			union tb2 {
+				u8 rsv;		/* 7 bit reserved data */
+				u8 tu;		/* 1 bit timestamp uncertain */	
+			} b2;
+			u64 streamId;
+			u32 avtpTS;
+			u8 format;
+			union tfsd1 {
+				u8 nsr;		/* 4 bits nominal sample rate */
+				u8 rsv;         /* 2 bits reserved data */
+				u8 cpf;         /* first 2 bits of channels per frame */
+			} fsd1;
+			u8 cpf;                 /* last 8 bits of channels per frame */
+			u8 bitDepth;
+			u16 streamDataLen;
+			union tfsd2 {
+				u8 rsv;		/* 3 bits reserved data */
+				u8 sp;		/* 1 bit sparse timestamp */
+				u8 evt;		/* 4 bits event data */
+			} fsd2;
+			u8 rsv;
+		} f;
+		u8 bytes[AVTP_PDU_COMMON_STREAM_HEADER_LENGTH];
+	} h;
+};
 
 struct listenermsrpfirstvalue {
 	u8 streamid[8];
@@ -90,7 +143,7 @@ struct listnervectorattribute {
 struct talkervectorattribute {
 	struct vectorheader hdr;
 	struct talkermsrpfirstvalue val;
-	u8 vector[2];
+	u8 vector[1];
 };
 
 struct listnermrpmsg {
@@ -125,8 +178,8 @@ struct talkermsrpdu {
  
 struct msrp {
 	bool initialized;
-	int  txState;
-	int  rxState;
+	int  talkerState;
+	int  listenerState;
 	struct socket* sock;
 	struct ifreq if_mac;
 	struct ifreq if_idx;
@@ -138,6 +191,7 @@ struct msrp {
 	struct sockaddr_ll rxSockAddress;
 	char txBuf[AVB_MSRP_ETH_FRAME_SIZE];
 	char rxBuf[AVB_MSRP_ETH_FRAME_SIZE];
+	u8 streamid[8];
 }; 
 
 struct workdata {
@@ -166,8 +220,10 @@ static int avb_hw_free(struct snd_pcm_substream *substream);
 static int avb_close(struct snd_pcm_substream *substream);
 
 static bool avb_msrp_init(struct msrp* msrp);
+static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp);
+static void avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp);
 static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join);
-static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join);
+static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int state);
 static void avb_msrp_listen(struct msrp* msrp);
 
 static void avbWqFn(struct work_struct *work);

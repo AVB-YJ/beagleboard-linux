@@ -82,9 +82,7 @@ static struct snd_pcm_ops avb_playback_ops = {
 	.hw_free =	avb_hw_free,
 	.prepare =	avb_prepare,
 	.trigger =	avb_trigger,
-	.pointer =	avb_pointer,
-	.page =		snd_pcm_lib_get_vmalloc_page,
-	.mmap =		snd_pcm_lib_mmap_vmalloc,
+	.pointer =	avb_pointer
 };
 
 static struct snd_pcm_ops avb_capture_ops = {
@@ -95,14 +93,48 @@ static struct snd_pcm_ops avb_capture_ops = {
 	.hw_free =	avb_hw_free,
 	.prepare =	avb_prepare,
 	.trigger =	avb_trigger,
-	.pointer =	avb_pointer,
-	.page =		snd_pcm_lib_get_vmalloc_page,
-	.mmap =		snd_pcm_lib_mmap_vmalloc,
+	.pointer =	avb_pointer
 };
 
+static struct snd_pcm_hardware avb_playback_hw = {
+        .info = (SNDRV_PCM_INFO_INTERLEAVED |
+                 SNDRV_PCM_INFO_BLOCK_TRANSFER),
+        .formats =          SNDRV_PCM_FMTBIT_S16_LE,
+        .rates =            SNDRV_PCM_RATE_8000_48000,
+        .rate_min =         8000,
+        .rate_max =         48000,
+        .channels_min =     2,
+        .channels_max =     2,
+        .buffer_bytes_max = 32768,
+        .period_bytes_min = 4096,
+        .period_bytes_max = 32768,
+        .periods_min =      1,
+        .periods_max =      1024,
+};
+
+static struct snd_pcm_hardware avb_capture_hw = {
+        .info = (SNDRV_PCM_INFO_INTERLEAVED |
+                 SNDRV_PCM_INFO_BLOCK_TRANSFER),
+        .formats =          SNDRV_PCM_FMTBIT_S16_LE,
+        .rates =            SNDRV_PCM_RATE_8000_48000,
+        .rate_min =         8000,
+        .rate_max =         48000,
+        .channels_min =     2,
+        .channels_max =     2,
+        .buffer_bytes_max = 32768,
+        .period_bytes_min = 4096,
+        .period_bytes_max = 32768,
+        .periods_min =      1,
+        .periods_max =      1024,
+};
 
 static int avb_open(struct snd_pcm_substream *substream)
 {
+	struct avbcard *avbcard = snd_pcm_substream_chip(substream);
+        struct snd_pcm_runtime *runtime = substream->runtime;
+
+        runtime->hw = avb_playback_hw;
+
 	return 0;
 }
 
@@ -140,6 +172,9 @@ static int avb_close(struct snd_pcm_substream *substream)
 static bool avb_msrp_init(struct msrp* msrp)
 {
 	printk(AVB_KERN_INFO "avb_msrp_init");
+
+	msrp->talkerState   = MSRP_DECLARATION_STATE_NONE;
+	msrp->listenerState = MSRP_DECLARATION_STATE_NONE;
 
 	if (sock_create(AF_PACKET, SOCK_RAW, htons(ETH_MSRP), &msrp->sock) < 0) {
 		printk(AVB_KERN_ERR "avb_msrp_init Socket creation fails \n");
@@ -268,8 +303,7 @@ static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 	pdu->msg.attibutelist.val.priorityandrank = 0;
 	pdu->msg.attibutelist.val.accumalatedlatency = 0;
 
-	pdu->msg.attibutelist.vector[0] = MSRP_THREE_PACK(0, 0, 0);
-	pdu->msg.attibutelist.vector[1] = MSRP_FOUR_PACK(0, 0, 0, 0);
+	pdu->msg.attibutelist.vector[0] = MSRP_THREE_PACK(((join == true)?(MSRP_ATTRIBUTE_EVENT_JOININ):(MSRP_ATTRIBUTE_EVENT_LEAVE)), 0, 0);
 
 	pdu->msg.endmarker = 0;
 	pdu->endmarker = 0;
@@ -286,7 +320,7 @@ static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 	}
 }
 
-static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join)
+static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int state)
 {
 	int txSize = 0;
 	int err = 0;
@@ -321,17 +355,17 @@ static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join)
 	pdu->msg.attributelistlen = sizeof(struct listnervectorattribute);
 
 	pdu->msg.attibutelist.hdr.numberofvalues = 1;
-	pdu->msg.attibutelist.val.streamid[0] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[0];
-	pdu->msg.attibutelist.val.streamid[1] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[1];
-	pdu->msg.attibutelist.val.streamid[2] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[2];
-	pdu->msg.attibutelist.val.streamid[3] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[3];
-	pdu->msg.attibutelist.val.streamid[4] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[4];
-	pdu->msg.attibutelist.val.streamid[5] = ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[5];
-	pdu->msg.attibutelist.val.streamid[6] = 0;
-	pdu->msg.attibutelist.val.streamid[7] = 1;
+	pdu->msg.attibutelist.val.streamid[0] = msrp->streamid[0];
+	pdu->msg.attibutelist.val.streamid[1] = msrp->streamid[1];
+	pdu->msg.attibutelist.val.streamid[2] = msrp->streamid[2];
+	pdu->msg.attibutelist.val.streamid[3] = msrp->streamid[3];
+	pdu->msg.attibutelist.val.streamid[4] = msrp->streamid[4];
+	pdu->msg.attibutelist.val.streamid[5] = msrp->streamid[5];
+	pdu->msg.attibutelist.val.streamid[6] = msrp->streamid[6];
+	pdu->msg.attibutelist.val.streamid[7] = msrp->streamid[7];
 
-	pdu->msg.attibutelist.vector[0] = MSRP_THREE_PACK(0, 0, 0);
-	pdu->msg.attibutelist.vector[1] = MSRP_FOUR_PACK(0, 0, 0, 0);
+	pdu->msg.attibutelist.vector[0] = MSRP_THREE_PACK(((join == true)?(MSRP_ATTRIBUTE_EVENT_JOININ):(MSRP_ATTRIBUTE_EVENT_LEAVE)), 0, 0);
+	pdu->msg.attibutelist.vector[1] = MSRP_FOUR_PACK(state, 0, 0, 0);
 
 	pdu->msg.endmarker = 0;
 	pdu->endmarker = 0;
@@ -348,9 +382,41 @@ static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join)
 	}
 }
 
+static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp)
+{
+	int rxState = MSRP_DECLARATION_STATE_ASKING_FAILED;
+	struct talkermsrpdu *tpdu = (struct talkermsrpdu*)&msrp->rxBuf[sizeof(struct ethhdr)];
+
+	if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR) {
+		rxState = MSRP_DECLARATION_STATE_READY;
+	} else {
+		rxState = MSRP_DECLARATION_STATE_ASKING_FAILED;	
+	}
+
+	memcpy(&msrp->streamid[0], &tpdu->msg.attibutelist.val.streamid[0], 8);
+
+	return rxState;
+}
+
+static void avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp)
+{
+	struct listnermsrpdu *pdu = (struct listnermsrpdu*)&msrp->txBuf[sizeof(struct ethhdr)];
+
+	if((pdu->msg.attibutelist.val.streamid[0] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[0]) &&
+	   (pdu->msg.attibutelist.val.streamid[1] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[1]) && 
+	   (pdu->msg.attibutelist.val.streamid[2] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[2]) && 
+	   (pdu->msg.attibutelist.val.streamid[3] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[3]) && 
+	   (pdu->msg.attibutelist.val.streamid[4] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[4]) && 
+	   (pdu->msg.attibutelist.val.streamid[5] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[5]) &&
+	   (pdu->msg.attibutelist.val.streamid[6] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[6]) && 
+	   (pdu->msg.attibutelist.val.streamid[7] == ((u8 *)&msrp->if_mac.ifr_hwaddr.sa_data)[7])) {
+	} 
+}
+
 static void avb_msrp_listen(struct msrp* msrp)
 {
 	int err = 0;
+	int rxState = MSRP_DECLARATION_STATE_ASKING_FAILED;
 	struct listnermsrpdu *tpdu = (struct listnermsrpdu*)&msrp->rxBuf[sizeof(struct ethhdr)];
 
 	printk(AVB_KERN_INFO "avb_msrp_listen");
@@ -360,10 +426,12 @@ static void avb_msrp_listen(struct msrp* msrp)
 			printk(KERN_WARNING "avb_msrp_listen unknown protocolversion %d \n", tpdu->protocolversion);
 			return;
 		} else {
-			if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR) {
-				avb_msrp_listenerdeclarations(msrp, true);
-			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_FAILED_VECTOR) {
+			if((tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR) ||
+			   (tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_FAILED_VECTOR)) {
+				rxState = avb_msrp_evaluateTalkerAdvertisement(msrp);
+				avb_msrp_listenerdeclarations(msrp, true, rxState);
 			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_LISTENER_VECTOR) {
+				avb_msrp_evaluateListnerAdvertisement(msrp);
 			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_DOMAIN_VECTOR) {
 			} else {
 				printk(KERN_WARNING "avb_msrp_listen unknown attribute type %d \n", tpdu->msg.attributetype);
