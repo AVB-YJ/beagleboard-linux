@@ -57,6 +57,49 @@
 #define AVTP_PDU_COMMON_STREAM_HEADER_LENGTH            (24)
 #define AVTP_PDU_COMMON_CONTROL_HEADER_LENGTH           (12)
 
+#define AVB_AVTP_SUBTYPE_AAF			(2)
+#define AVB_AVTP_AAF_VERSION			(0)
+
+#define AVB_AVTP_AAF_FORMAT_USER_SP		(0)
+#define AVB_AVTP_AAF_FORMAT_32_BIT_FLOAT	(1)
+#define AVB_AVTP_AAF_FORMAT_32_BIT_INT		(2)
+#define AVB_AVTP_AAF_FORMAT_24_bit_INT		(3)
+#define AVB_AVTP_AAF_FORMAT_16_BIT_INT		(4)
+#define AVB_AVTP_AAF_FORMAT_32_BIT_AES3		(5)
+
+#define AVB_AVTP_AAF_NSR_USER_SP		(0x0)
+#define AVB_AVTP_AAF_NSR_8_KHZ			(0x1)
+#define AVB_AVTP_AAF_NSR_16_KHZ			(0x2)
+#define AVB_AVTP_AAF_NSR_32_KHZ			(0x3)
+#define AVB_AVTP_AAF_NSR_44_1_KHZ		(0x4)
+#define AVB_AVTP_AAF_NSR_48_KHZ			(0x5)
+#define AVB_AVTP_AAF_NSR_88_2_KHZ		(0x6)
+#define AVB_AVTP_AAF_NSR_96_KHZ			(0x7)
+#define AVB_AVTP_AAF_NSR_176_4_KHZ		(0x8)
+#define AVB_AVTP_AAF_NSR_192_KHZ		(0x9)
+#define AVB_AVTP_AAF_NSR_24_KHZ			(0xA)
+
+#define AVB_AVTP_AAF_SAMPLES_PER_PACKET		(10)
+
+#define AVB_AVTP_AAF_HDR_GET_SV(hdr)		((hdr->h.f.b1.sv & 0x80) >> 7)
+#define AVB_AVTP_AAF_HDR_SET_SV(hdr, val)	(hdr->h.f.b1.sv = (hdr->h.f.b1.sv | ((val << 7) & 0x80)))
+#define AVB_AVTP_AAF_HDR_GET_VER(hdr)		((hd->h.f.b1.version & 0x70) >> 4)
+#define AVB_AVTP_AAF_HDR_SET_VER(hdr, val)	(hdr->h.f.b1.version = (hdr->h.f.b1.version | ((val << 4)& 0x70)))
+#define AVB_AVTP_AAF_HDR_GET_MR(hdr)		((hd->h.f.b1.mr & 0x08) >> 3)
+#define AVB_AVTP_AAF_HDR_SET_MR(hdr, val)	(hdr->h.f.b1.mr = (hdr->h.f.b1.mr | ((val << 3) & 0x08)))
+#define AVB_AVTP_AAF_HDR_GET_TSV(hdr)		(hd->h.f.b1.tsValid & 0x01)
+#define AVB_AVTP_AAF_HDR_SET_TSV(hdr, val)	(hdr->h.f.b1.tsValid = (hdr->h.f.b1.tsValid | (val & 0x01)))
+#define AVB_AVTP_AAF_HDR_GET_TU(hdr)		(hd->h.f.b2.tu & 0x01)
+#define AVB_AVTP_AAF_HDR_SET_TU(hdr, val)	(hdr->h.f.b2.tu = (hdr->h.f.b2.tu | (val & 0x01)))
+#define AVB_AVTP_AAF_HDR_GET_NSR(hdr)		((hd->h.f.fsd1.nsr & 0xF0) >> 4)
+#define AVB_AVTP_AAF_HDR_SET_NSR(hdr, val)	(hdr->h.f.fsd1.nsr = (hdr->h.f.fsd1.nsr | ((val << 4)& 0xF0)))
+#define AVB_AVTP_AAF_HDR_GET_CPF(hdr)		(hd->h.f.fsd1.cpf & 0x03)
+#define AVB_AVTP_AAF_HDR_SET_CPF(hdr, val)	(hdr->h.f.fsd1.cpf = (hdr->h.f.fsd1.cpf | (val & 0x03)))
+#define AVB_AVTP_AAF_HDR_GET_SP(hdr)		((hd->h.f.fsd2.sp & 0x10) >> 4)
+#define AVB_AVTP_AAF_HDR_SET_SP(hdr, val)	(hdr->h.f.fsd2.sp = (hdr->h.f.fsd2.sp | ((val << 4) & 0x10)))
+#define AVB_AVTP_AAF_HDR_GET_EVT(hdr)		(hd->h.f.fsd2.evt & 0x0F)
+#define AVB_AVTP_AAF_HDR_SET_EVT(hdr, val)	(hdr->h.f.fsd2.evt = (hdr->h.f.fsd2.evt | (val & 0x0F)))
+
 typedef signed long long int s64;
 typedef signed int s32;
 typedef signed short int s16;
@@ -175,11 +218,10 @@ struct talkermsrpdu {
 };
 
 #pragma pack(pop)
- 
-struct msrp {
-	bool initialized;
-	int  talkerState;
-	int  listenerState;
+
+struct socketdata {
+	int type;
+	char destmac[6];
 	struct socket* sock;
 	struct ifreq if_mac;
 	struct ifreq if_idx;
@@ -191,6 +233,13 @@ struct msrp {
 	struct sockaddr_ll rxSockAddress;
 	char txBuf[AVB_MSRP_ETH_FRAME_SIZE];
 	char rxBuf[AVB_MSRP_ETH_FRAME_SIZE];
+};
+
+struct msrp {
+	bool initialized;
+	int  talkerState;
+	int  listenerState;
+	struct socketdata sd;
 	u8 streamid[8];
 }; 
 
@@ -206,18 +255,33 @@ struct avbdevice {
 };
 
 struct avbcard {
+	struct socketdata sd;
 	struct snd_card *card;
 	struct snd_pcm *pcm[1];
+	snd_pcm_uframes_t hwIdx;
+	snd_pcm_uframes_t numBytesConsumed;
 };
 
+static bool avb_socket_init(struct socketdata* sd);
 
-static int avb_open(struct snd_pcm_substream *substream);
+static int avb_get_avtp_aaf_nsr(int sampleRate);
+static int avb_get_avtp_aaf_format(int rtformat);
+static void avb_avtp_aaf_header_init(char* buf, struct snd_pcm_substream *substream, struct snd_pcm_hw_params *hw_params);
+
+static int avb_playback_open(struct snd_pcm_substream *substream);
+static int avb_playback_close(struct snd_pcm_substream *substream);
+static int avb_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params);
+static int avb_hw_free(struct snd_pcm_substream *substream);
 static int avb_prepare(struct snd_pcm_substream *substream);
 static int avb_trigger(struct snd_pcm_substream *substream, int cmd);
 static snd_pcm_uframes_t avb_pointer(struct snd_pcm_substream *substream);
-static int avb_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params);
-static int avb_hw_free(struct snd_pcm_substream *substream);
-static int avb_close(struct snd_pcm_substream *substream);
+static int avb_copy(struct snd_pcm_substream *substream,
+                       int channel, snd_pcm_uframes_t pos,
+                       void __user *dst,
+                       snd_pcm_uframes_t count);
+
+static int avb_capture_open(struct snd_pcm_substream *substream);
+static int avb_capture_close(struct snd_pcm_substream *substream);
 
 static bool avb_msrp_init(struct msrp* msrp);
 static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp);
