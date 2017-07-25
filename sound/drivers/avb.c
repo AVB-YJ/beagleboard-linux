@@ -131,31 +131,41 @@ static struct snd_pcm_hardware avb_capture_hw = {
 
 static bool avb_socket_init(struct socketdata* sd)
 {
+	int err = 0;
+	struct timeval tsOpts;      
+	tsOpts.tv_sec = 1;
+	tsOpts.tv_usec = 0;
+
 	printk(AVB_KERN_INFO "avb_socket_init");
 
-	if (sock_create(AF_PACKET, SOCK_RAW, htons(sd->type), &sd->sock) < 0) {
-		printk(AVB_KERN_ERR "avb_socket_init Socket creation fails \n");
+	if ((err = sock_create(AF_PACKET, SOCK_RAW, htons(sd->type), &sd->sock)) != 0) {
+		printk(AVB_KERN_ERR "avb_socket_init Socket creation fails %d \n", err);
 		return false;
 	}
 
 	memset(&sd->if_idx, 0, sizeof(struct ifreq));
-	strncpy(sd->if_idx.ifr_name, "eth0", 5);
-	if (sd->sock->ops->ioctl(sd->sock, SIOCGIFINDEX, (unsigned int)&sd->if_idx) < 0) {
-		printk(AVB_KERN_ERR "avb_msrp_init SIOCGIFINDEX err");
+	/*strncpy(sd->if_idx.ifr_name, "eth0", sizeof(sd->if_idx.ifr_name) - 1);
+	if ((err = kernel_sock_ioctl(sd->sock, SIOCGIFINDEX, (unsigned int)&sd->if_idx)) != 0) {
+		printk(AVB_KERN_ERR "avb_msrp_init SIOCGIFINDEX err: %d \n", err);
 		return false;
-	}
+	}*/
 
 	memset(&sd->if_mac, 0, sizeof(struct ifreq));
-	strncpy(sd->if_mac.ifr_name, "eth0", 5);
-	if (sd->sock->ops->ioctl(sd->sock, SIOCGIFHWADDR, (unsigned int)&sd->if_mac) < 0) {
-		printk(AVB_KERN_ERR "avb_msrp_init SIOCGIFHWADDR err");
+	/*strncpy(sd->if_mac.ifr_name, "eth0", sizeof(sd->if_idx.ifr_name) - 1);
+	if ((err = kernel_sock_ioctl(sd->sock, SIOCGIFHWADDR, (unsigned int)&sd->if_mac)) != 0) {
+		printk(AVB_KERN_ERR "avb_msrp_init SIOCGIFHWADDR err:%d \n", err);
+		return false;
+	}*/
+
+	if ((err = kernel_setsockopt(sd->sock, SOL_SOCKET, SO_RCVTIMEO, (void *) &tsOpts, sizeof(tsOpts))) != 0) {
+		printk(KERN_WARNING "avb_msrp_init set rx timeout fails %d\n", err);
 		return false;
 	}
 
 	/* Index of the network device */
 	sd->txSockAddress.sll_family = AF_PACKET;
 	sd->txSockAddress.sll_protocol = htons(sd->type);
-	sd->txSockAddress.sll_ifindex = sd->if_idx.ifr_ifindex;
+	sd->txSockAddress.sll_ifindex = 2;
 	/* Address length*/
 	sd->txSockAddress.sll_halen = ETH_ALEN;
 	/* Destination MAC */
@@ -177,7 +187,7 @@ static bool avb_socket_init(struct socketdata* sd)
 	/* Index of the network device */
 	sd->rxSockAddress.sll_family = AF_PACKET;
 	sd->rxSockAddress.sll_protocol = htons(sd->type);
-	sd->rxSockAddress.sll_ifindex = sd->if_idx.ifr_ifindex;
+	sd->rxSockAddress.sll_ifindex = 2;
 	/* Address length*/
 	sd->rxSockAddress.sll_halen = ETH_ALEN;
 	/* Destination MAC */
@@ -407,12 +417,19 @@ static int avb_copy(struct snd_pcm_substream *substream,
 		txSize = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
 		bytesToCopy = (AVB_AVTP_AAF_SAMPLES_PER_PACKET * (substream->runtime->frame_bits / 8));
 
-		copiedBytes += copy_from_user(&avbcard->sd.txBuf[txSize + copiedBytes], (&((u8*)dst)[copiedBytes]), bytesToCopy);
+		if((err = copy_from_user(&avbcard->sd.txBuf[txSize], (&((u8*)dst)[copiedBytes]), bytesToCopy)) == 0) {
+			copiedBytes += bytesToCopy;		
+		} else {
+			printk(KERN_WARNING "avb_copy copy from user fails: %d \n", err);
+			return -1;
+		}
 		txSize += bytesToCopy;
 		copidFrames += AVB_AVTP_AAF_SAMPLES_PER_PACKET;
 
+		printk(AVB_KERN_INFO "avb_copy: bytesToCopy:%ld, copiedBytes: %ld, copiedFrames: %ld", bytesToCopy, copiedBytes, copidFrames);
+
 		avbcard->sd.txiov.iov_base = avbcard->sd.txBuf;
-		avbcard->sd.txiov.iov_len = txSize;
+		avbcard->sd.txiov.iov_len  = txSize;
 		iov_iter_init(&avbcard->sd.txMsgHdr.msg_iter, WRITE | ITER_KVEC, &avbcard->sd.txiov, 1, txSize);
 
 		if ((err = sock_sendmsg(avbcard->sd.sock, &avbcard->sd.txMsgHdr)) <= 0) {
@@ -662,19 +679,24 @@ static void avb_msrp_listen(struct msrp* msrp)
 
 static void avbWqFn(struct work_struct *work)
 {
+	bool initDone = true;
 	struct workdata* wd = (struct workdata*)work;
 
 	printk(AVB_KERN_INFO "avbWqFn");
 
 	if(wd->msrp->initialized == false) {
+		initDone = false;
 		wd->msrp->initialized = avb_msrp_init(wd->msrp);
+	}
 
-		if(wd->msrp->initialized == false) {
-			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.wd, 10000);
-		}
+	if(wd->msrp->initialized == false) {
+		queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.wd, 10000);
 	} else {
-		avb_msrp_talkerdeclarations(wd->msrp, true);
-		avb_msrp_listen(wd->msrp);	
+		if(initDone == false) {
+			avb_msrp_talkerdeclarations(wd->msrp, true);
+		}
+		avb_msrp_listen(wd->msrp);
+		queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.wd, 2000);
 	}
 }
 
