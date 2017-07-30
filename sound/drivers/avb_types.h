@@ -22,6 +22,9 @@
 
 #define AVB_WQ "AVBWQ"
 
+#define AVB_DELAY_WORK_MSRP                             (0)
+#define AVB_DELAY_WORK_AVTP                             (1)
+
 #define AVB_MSRP_ETH_FRAME_SIZE                         (512)
 
 #define MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR	(1)
@@ -79,7 +82,7 @@
 #define AVB_AVTP_AAF_NSR_192_KHZ		(0x9)
 #define AVB_AVTP_AAF_NSR_24_KHZ			(0xA)
 
-#define AVB_AVTP_AAF_SAMPLES_PER_PACKET		(10)
+#define AVB_AVTP_AAF_SAMPLES_PER_PACKET		(176)
 
 #define AVB_AVTP_AAF_HDR_GET_SV(hdr)		((hdr->h.f.b1.sv & 0x80) >> 7)
 #define AVB_AVTP_AAF_HDR_SET_SV(hdr, val)	(hdr->h.f.b1.sv = (hdr->h.f.b1.sv | ((val << 7) & 0x80)))
@@ -243,26 +246,39 @@ struct msrp {
 	u8 streamid[8];
 }; 
 
-struct workdata {
-	struct delayed_work work;
-	struct msrp* msrp;
-};
-
-struct avbdevice {
-	struct msrp msrp;
-	struct workdata* wd;
-	struct workqueue_struct* wq;
-};
-
 struct avbcard {
 	struct socketdata sd;
 	struct snd_card *card;
 	struct snd_pcm *pcm[1];
 	snd_pcm_uframes_t hwIdx;
 	snd_pcm_uframes_t numBytesConsumed;
+	snd_pcm_uframes_t periodsize;
+	int framesize;
+	int buffersize;
+	int fillsize;
+	int prevHwIdx;
+	int framecount;
+	unsigned long int startts;
 };
 
-static bool avb_socket_init(struct socketdata* sd);
+struct workdata {
+	struct delayed_work work;
+	int delayedWorkId;
+	union delayed_work_data {
+		struct msrp* msrp;
+		struct avbcard* card;
+	} dw;
+	struct snd_pcm_substream* substream;
+};
+
+struct avbdevice {
+	struct msrp msrp;
+	struct workdata* msrpwd;
+	struct workdata* avtpwd;
+	struct workqueue_struct* wq;
+};
+
+static bool avb_socket_init(struct socketdata* sd, int rxTimeout);
 
 static int avb_get_avtp_aaf_nsr(int sampleRate);
 static int avb_get_avtp_aaf_format(int rtformat);
@@ -270,18 +286,27 @@ static void avb_avtp_aaf_header_init(char* buf, struct snd_pcm_substream *substr
 
 static int avb_playback_open(struct snd_pcm_substream *substream);
 static int avb_playback_close(struct snd_pcm_substream *substream);
-static int avb_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params);
-static int avb_hw_free(struct snd_pcm_substream *substream);
-static int avb_prepare(struct snd_pcm_substream *substream);
-static int avb_trigger(struct snd_pcm_substream *substream, int cmd);
-static snd_pcm_uframes_t avb_pointer(struct snd_pcm_substream *substream);
-static int avb_copy(struct snd_pcm_substream *substream,
+static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params);
+static int avb_playback_hw_free(struct snd_pcm_substream *substream);
+static int avb_playback_prepare(struct snd_pcm_substream *substream);
+static int avb_playback_trigger(struct snd_pcm_substream *substream, int cmd);
+static snd_pcm_uframes_t avb_playback_pointer(struct snd_pcm_substream *substream);
+static int avb_playback_copy(struct snd_pcm_substream *substream,
                        int channel, snd_pcm_uframes_t pos,
                        void __user *dst,
                        snd_pcm_uframes_t count);
 
 static int avb_capture_open(struct snd_pcm_substream *substream);
 static int avb_capture_close(struct snd_pcm_substream *substream);
+static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params);
+static int avb_capture_hw_free(struct snd_pcm_substream *substream);
+static int avb_capture_prepare(struct snd_pcm_substream *substream);
+static int avb_capture_trigger(struct snd_pcm_substream *substream, int cmd);
+static snd_pcm_uframes_t avb_capture_pointer(struct snd_pcm_substream *substream);
+static int avb_capture_copy(struct snd_pcm_substream *substream,
+                       int channel, snd_pcm_uframes_t pos,
+                       void __user *dst,
+                       snd_pcm_uframes_t count);
 
 static bool avb_msrp_init(struct msrp* msrp);
 static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp);
