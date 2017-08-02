@@ -246,6 +246,8 @@ struct msrp {
 }; 
 
 struct streaminfo {
+	int sr;
+	unsigned long int startts;
 	snd_pcm_uframes_t hwIdx;
 	snd_pcm_uframes_t numBytesConsumed;
 	snd_pcm_uframes_t periodsize;
@@ -255,8 +257,6 @@ struct streaminfo {
 	snd_pcm_uframes_t fillsize;
 	snd_pcm_uframes_t prevHwIdx;
 	snd_pcm_uframes_t framecount;
-	unsigned long int startts;
-	int sr;
 	struct snd_pcm_substream* substream;
 };
 
