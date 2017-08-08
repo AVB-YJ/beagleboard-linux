@@ -223,10 +223,10 @@ struct talkermsrpdu {
 
 struct socketdata {
 	int type;
+	int ifidx;
+	char srcmac[6];
 	char destmac[6];
 	struct socket* sock;
-	struct ifreq if_mac;
-	struct ifreq if_idx;
 	struct iovec txiov;
 	struct iovec rxiov;
 	struct msghdr txMsgHdr;
@@ -239,8 +239,8 @@ struct socketdata {
 
 struct msrp {
 	bool initialized;
-	int  talkerState;
-	int  listenerState;
+	int  rxState;
+	int  txState;
 	struct socketdata sd;
 	u8 streamid[8];
 }; 
@@ -275,7 +275,6 @@ struct workdata {
 		struct msrp* msrp;
 		struct avbcard* card;
 	} dw;
-	struct snd_pcm_substream* substream;
 };
 
 struct avbdevice {
@@ -320,7 +319,7 @@ static int avb_avtp_listen(struct avbcard* card);
 
 static bool avb_msrp_init(struct msrp* msrp);
 static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp);
-static void avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp);
+static int avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp);
 static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join);
 static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int state);
 static void avb_msrp_listen(struct msrp* msrp);

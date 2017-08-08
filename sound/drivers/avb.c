@@ -134,6 +134,8 @@ static struct snd_pcm_hardware avb_capture_hw = {
 static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
 {
 	int err = 0;
+	struct net_device *dev = NULL;
+	struct net *net;
 	struct timeval tsOpts;      
 	tsOpts.tv_sec = (rxTimeout / 1000);
 	tsOpts.tv_usec = (rxTimeout % 1000);
@@ -145,19 +147,15 @@ static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
 		return false;
 	}
 
-	memset(&sd->if_idx, 0, sizeof(struct ifreq));
-	/*strncpy(sd->if_idx.ifr_name, "eth0", sizeof(sd->if_idx.ifr_name) - 1);
-	if ((err = kernel_sock_ioctl(sd->sock, SIOCGIFINDEX, (unsigned int)&sd->if_idx)) != 0) {
-		printk(AVB_KERN_ERR "avb_msrp_init SIOCGIFINDEX err: %d \n", err);
-		return false;
-	}*/
+	net = sock_net(sd->sock->sk);
+	dev = dev_get_by_name_rcu(net, "eth0");
 
-	memset(&sd->if_mac, 0, sizeof(struct ifreq));
-	/*strncpy(sd->if_mac.ifr_name, "eth0", sizeof(sd->if_idx.ifr_name) - 1);
-	if ((err = kernel_sock_ioctl(sd->sock, SIOCGIFHWADDR, (unsigned int)&sd->if_mac)) != 0) {
-		printk(AVB_KERN_ERR "avb_msrp_init SIOCGIFHWADDR err:%d \n", err);
-		return false;
-	}*/
+	memcpy(&sd->srcmac[0], dev->dev_addr, 6);
+	sd->ifidx = dev->ifindex;
+
+	rtnl_lock();
+	dev_set_promiscuity(dev, 1);
+	rtnl_unlock();
 
 	if ((err = kernel_setsockopt(sd->sock, SOL_SOCKET, SO_RCVTIMEO, (void *) &tsOpts, sizeof(tsOpts))) != 0) {
 		printk(KERN_WARNING "avb_msrp_init set rx timeout fails %d\n", err);
@@ -167,7 +165,7 @@ static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
 	/* Index of the network device */
 	sd->txSockAddress.sll_family = AF_PACKET;
 	sd->txSockAddress.sll_protocol = htons(sd->type);
-	sd->txSockAddress.sll_ifindex = 2;
+	sd->txSockAddress.sll_ifindex = sd->ifidx;
 	/* Address length*/
 	sd->txSockAddress.sll_halen = ETH_ALEN;
 	/* Destination MAC */
@@ -189,7 +187,7 @@ static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
 	/* Index of the network device */
 	sd->rxSockAddress.sll_family = AF_PACKET;
 	sd->rxSockAddress.sll_protocol = htons(sd->type);
-	sd->rxSockAddress.sll_ifindex = 2;
+	sd->rxSockAddress.sll_ifindex = sd->ifidx;
 	/* Address length*/
 	sd->rxSockAddress.sll_halen = ETH_ALEN;
 	/* Destination MAC */
@@ -288,12 +286,12 @@ static void avb_avtp_aaf_header_init(char* buf, struct snd_pcm_substream *substr
 	eh->h_dest[3] = avbcard->sd.destmac[3];
 	eh->h_dest[4] = avbcard->sd.destmac[4];
 	eh->h_dest[5] = avbcard->sd.destmac[5];
-	eh->h_source[0] = ((u8 *)&avbcard->sd.if_mac.ifr_hwaddr.sa_data)[0];
-	eh->h_source[1] = ((u8 *)&avbcard->sd.if_mac.ifr_hwaddr.sa_data)[1];
-	eh->h_source[2] = ((u8 *)&avbcard->sd.if_mac.ifr_hwaddr.sa_data)[2];
-	eh->h_source[3] = ((u8 *)&avbcard->sd.if_mac.ifr_hwaddr.sa_data)[3];
-	eh->h_source[4] = ((u8 *)&avbcard->sd.if_mac.ifr_hwaddr.sa_data)[4];
-	eh->h_source[5] = ((u8 *)&avbcard->sd.if_mac.ifr_hwaddr.sa_data)[5];
+	eh->h_source[0] = avbcard->sd.srcmac[0];
+	eh->h_source[1] = avbcard->sd.srcmac[1];
+	eh->h_source[2] = avbcard->sd.srcmac[2];
+	eh->h_source[3] = avbcard->sd.srcmac[3];
+	eh->h_source[4] = avbcard->sd.srcmac[4];
+	eh->h_source[5] = avbcard->sd.srcmac[5];
 
 	eh->h_proto = htons(avbcard->sd.type);
 
@@ -310,7 +308,7 @@ static void avb_avtp_aaf_header_init(char* buf, struct snd_pcm_substream *substr
 	AVB_AVTP_AAF_HDR_SET_NSR(hdr, avb_get_avtp_aaf_nsr(params_rate(hw_params)));
 	AVB_AVTP_AAF_HDR_SET_CPF(hdr, params_channels(hw_params));
 	hdr->h.f.bitDepth = substream->runtime->sample_bits;
-	hdr->h.f.streamDataLen = AVTP_PDU_COMMON_STREAM_HEADER_LENGTH;
+	hdr->h.f.streamDataLen = 0;
 	AVB_AVTP_AAF_HDR_SET_SP(hdr, 0);
 	AVB_AVTP_AAF_HDR_SET_EVT(hdr, 0);
 }
@@ -439,6 +437,8 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
 		txSize = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
 		bytesToCopy = (AVB_AVTP_AAF_SAMPLES_PER_PACKET * (substream->runtime->frame_bits / 8));
 
+		hdr->h.f.streamDataLen = bytesToCopy;
+
 		if((err = copy_from_user(&avbcard->sd.txBuf[txSize], (&((u8*)dst)[copiedBytes]), bytesToCopy)) == 0) {
 			copiedBytes += bytesToCopy;		
 		} else {
@@ -519,6 +519,7 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 {
 	struct avbcard *avbcard = snd_pcm_substream_chip(substream);
 
+	avbcard->rx.substream = substream;
 	avbcard->rx.hwIdx = 0;
 	avbcard->rx.fillsize = 0;
 	avbcard->rx.prevHwIdx = 0;
@@ -538,7 +539,6 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 
 	avbdevice.avtpwd->dw.card = avbcard;
 	avbdevice.avtpwd->delayedWorkId = AVB_DELAY_WORK_AVTP;
-	avbdevice.avtpwd->substream = substream;
 	INIT_DELAYED_WORK((struct delayed_work*)avbdevice.avtpwd, avbWqFn);
 			
 	queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
@@ -599,28 +599,53 @@ static int avb_capture_copy(struct snd_pcm_substream *substream,
                        void __user *dst,
                        snd_pcm_uframes_t count)
 {
+	char* srcbuf;
+	int copyres = 0;
 	struct avbcard *avbcard = snd_pcm_substream_chip(substream);
 
-	printk(AVB_KERN_INFO "avb_capture_copy: ch:%d, pos: %ld, count: %ld", channel, pos, count);
+	srcbuf = (char*)snd_pcm_sgbuf_get_ptr(avbcard->rx.substream, (pos * avbcard->rx.framesize));
+	copyres = copy_to_user(dst, srcbuf, (count * avbcard->rx.framesize));
+
+	printk(AVB_KERN_INFO "avb_capture_copy: ch:%d, pos: %ld, ct: %ld, res: %d", channel, pos, count, copyres);
 
 	avbcard->rx.numBytesConsumed += (count * avbcard->rx.framesize);
 
 	return count;
 }
 
-static int avb_avtp_listen(struct avbcard* card)
+static int avb_avtp_listen(struct avbcard* avbcard)
 {
-	printk(AVB_KERN_INFO "avb_avtp_listen");
+	int err = 0;
+	char* srcbuf;
+	char* destbuf;
+	int rxOff = 0;
+	int rxSize = 0;
+	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.rxBuf[sizeof(struct ethhdr)];
 
-	return AVB_AVTP_AAF_SAMPLES_PER_PACKET;
+	if ((err = sock_recvmsg(avbcard->sd.sock, &avbcard->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0)) > 0) {
+		rxOff   = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
+		srcbuf  = (char*)&avbcard->sd.rxBuf[rxOff];
+
+		rxSize = hdr->h.f.streamDataLen;
+		destbuf = (char*)snd_pcm_sgbuf_get_ptr(avbcard->rx.substream, (avbcard->rx.hwIdx * avbcard->rx.framesize));
+		
+		printk(AVB_KERN_INFO "avb_avtp_listen seq: %d, idx: %ld, sz:  %d", hdr->h.f.seqNo, avbcard->rx.hwIdx, rxSize);
+
+		memcpy(destbuf, srcbuf, rxSize);
+	} else {
+		printk(KERN_WARNING "avb_avtp_listen Socket reception fails %d \n", err);
+		return 0;
+	}
+
+	return rxSize;
 }
 
 static bool avb_msrp_init(struct msrp* msrp)
 {
 	printk(AVB_KERN_INFO "avb_msrp_init");
 
-	msrp->talkerState   = MSRP_DECLARATION_STATE_NONE;
-	msrp->listenerState = MSRP_DECLARATION_STATE_NONE;
+	msrp->rxState = MSRP_DECLARATION_STATE_NONE;
+	msrp->txState = MSRP_DECLARATION_STATE_NONE;
 
 	msrp->sd.type = ETH_MSRP;
 	msrp->sd.destmac[0] = 0x01;
@@ -640,7 +665,7 @@ static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 	struct ethhdr *eh = (struct ethhdr *)&msrp->sd.txBuf[0];
 	struct talkermsrpdu *pdu = (struct talkermsrpdu*)&msrp->sd.txBuf[sizeof(struct ethhdr)];
 
-	printk(AVB_KERN_INFO "avb_msrp_join");
+	printk(AVB_KERN_INFO "avb_msrp_talkerdeclarations");
 
 	/* Initialize it */
 	memset(msrp->sd.txBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
@@ -652,12 +677,12 @@ static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 	eh->h_dest[3] = 0x00;
 	eh->h_dest[4] = 0x00;
 	eh->h_dest[5] = 0x0E;
-	eh->h_source[0] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[0];
-	eh->h_source[1] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[1];
-	eh->h_source[2] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[2];
-	eh->h_source[3] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[3];
-	eh->h_source[4] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[4];
-	eh->h_source[5] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[5];
+	eh->h_source[0] = msrp->sd.srcmac[0];
+	eh->h_source[1] = msrp->sd.srcmac[1];
+	eh->h_source[2] = msrp->sd.srcmac[2];
+	eh->h_source[3] = msrp->sd.srcmac[3];
+	eh->h_source[4] = msrp->sd.srcmac[4];
+	eh->h_source[5] = msrp->sd.srcmac[5];
 
 	/* Fill in Ethertype field */
 	eh->h_proto = htons(msrp->sd.type);
@@ -668,12 +693,12 @@ static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 	pdu->msg.attributelistlen = sizeof(struct talkervectorattribute);
 
 	pdu->msg.attibutelist.hdr.numberofvalues = 1;
-	pdu->msg.attibutelist.val.streamid[0] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[0];
-	pdu->msg.attibutelist.val.streamid[1] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[1];
-	pdu->msg.attibutelist.val.streamid[2] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[2];
-	pdu->msg.attibutelist.val.streamid[3] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[3];
-	pdu->msg.attibutelist.val.streamid[4] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[4];
-	pdu->msg.attibutelist.val.streamid[5] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[5];
+	pdu->msg.attibutelist.val.streamid[0] = msrp->sd.srcmac[0];
+	pdu->msg.attibutelist.val.streamid[1] = msrp->sd.srcmac[1];
+	pdu->msg.attibutelist.val.streamid[2] = msrp->sd.srcmac[2];
+	pdu->msg.attibutelist.val.streamid[3] = msrp->sd.srcmac[3];
+	pdu->msg.attibutelist.val.streamid[4] = msrp->sd.srcmac[4];
+	pdu->msg.attibutelist.val.streamid[5] = msrp->sd.srcmac[5];
 	pdu->msg.attibutelist.val.streamid[6] = 0;
 	pdu->msg.attibutelist.val.streamid[7] = 1;
 
@@ -715,7 +740,7 @@ static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int stat
 	struct ethhdr *eh = (struct ethhdr *)&msrp->sd.txBuf[0];
 	struct listnermsrpdu *pdu = (struct listnermsrpdu*)&msrp->sd.txBuf[sizeof(struct ethhdr)];
 
-	printk(AVB_KERN_INFO "avb_msrp_join");
+	printk(AVB_KERN_INFO "avb_msrp_listenerdeclarations");
 
 	/* Initialize it */
 	memset(msrp->sd.txBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
@@ -727,12 +752,12 @@ static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int stat
 	eh->h_dest[3] = 0x00;
 	eh->h_dest[4] = 0x00;
 	eh->h_dest[5] = 0x0E;
-	eh->h_source[0] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[0];
-	eh->h_source[1] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[1];
-	eh->h_source[2] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[2];
-	eh->h_source[3] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[3];
-	eh->h_source[4] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[4];
-	eh->h_source[5] = ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[5];
+	eh->h_source[0] = msrp->sd.srcmac[0];
+	eh->h_source[1] = msrp->sd.srcmac[1];
+	eh->h_source[2] = msrp->sd.srcmac[2];
+	eh->h_source[3] = msrp->sd.srcmac[3];
+	eh->h_source[4] = msrp->sd.srcmac[4];
+	eh->h_source[5] = msrp->sd.srcmac[5];
 
 	/* Fill in Ethertype field */
 	eh->h_proto = htons(msrp->sd.type);
@@ -786,49 +811,64 @@ static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp)
 	return rxState;
 }
 
-static void avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp)
+static int avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp)
 {
-	struct listnermsrpdu *pdu = (struct listnermsrpdu*)&msrp->sd.txBuf[sizeof(struct ethhdr)];
+	int txState = MSRP_DECLARATION_STATE_ASKING_FAILED;
+	struct listnermsrpdu *pdu = (struct listnermsrpdu*)&msrp->sd.rxBuf[sizeof(struct ethhdr)];
 
-	if((pdu->msg.attibutelist.val.streamid[0] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[0]) &&
-	   (pdu->msg.attibutelist.val.streamid[1] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[1]) && 
-	   (pdu->msg.attibutelist.val.streamid[2] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[2]) && 
-	   (pdu->msg.attibutelist.val.streamid[3] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[3]) && 
-	   (pdu->msg.attibutelist.val.streamid[4] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[4]) && 
-	   (pdu->msg.attibutelist.val.streamid[5] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[5]) &&
-	   (pdu->msg.attibutelist.val.streamid[6] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[6]) && 
-	   (pdu->msg.attibutelist.val.streamid[7] == ((u8 *)&msrp->sd.if_mac.ifr_hwaddr.sa_data)[7])) {
+	if((pdu->msg.attibutelist.val.streamid[0] == msrp->sd.srcmac[0]) &&
+	   (pdu->msg.attibutelist.val.streamid[1] == msrp->sd.srcmac[1]) && 
+	   (pdu->msg.attibutelist.val.streamid[2] == msrp->sd.srcmac[2]) && 
+	   (pdu->msg.attibutelist.val.streamid[3] == msrp->sd.srcmac[3]) && 
+	   (pdu->msg.attibutelist.val.streamid[4] == msrp->sd.srcmac[4]) && 
+	   (pdu->msg.attibutelist.val.streamid[5] == msrp->sd.srcmac[5]) &&
+	   (pdu->msg.attibutelist.val.streamid[6] == 0) && 
+	   (pdu->msg.attibutelist.val.streamid[7] == 1)) {
+		txState = MSRP_DECLARATION_STATE_READY;
 	} 
+
+	return txState;
 }
 
 static void avb_msrp_listen(struct msrp* msrp)
 {
 	int err = 0;
-	int rxState = MSRP_DECLARATION_STATE_ASKING_FAILED;
+	mm_segment_t oldfs;
 	struct listnermsrpdu *tpdu = (struct listnermsrpdu*)&msrp->sd.rxBuf[sizeof(struct ethhdr)];
 
-	printk(AVB_KERN_INFO "avb_msrp_listen");
+	memset(msrp->sd.rxBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	msrp->sd.rxiov.iov_base = msrp->sd.rxBuf;
+	msrp->sd.rxiov.iov_len = AVB_MSRP_ETH_FRAME_SIZE;
+	iov_iter_init(&msrp->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &msrp->sd.rxiov, 1, AVB_MSRP_ETH_FRAME_SIZE);
 
-	if ((err = sock_recvmsg(msrp->sd.sock, &msrp->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0)) > 0) {
+	oldfs = get_fs();
+	set_fs(KERNEL_DS);
+	err = sock_recvmsg(msrp->sd.sock, &msrp->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0);
+	set_fs(oldfs);
+
+	printk(KERN_WARNING "avb_msrp_listen Socket reception res %d \n", err);
+
+	if (err <= 0)
+		return;
+	else {
 		if(tpdu->protocolversion != 0) {
 			printk(KERN_WARNING "avb_msrp_listen unknown protocolversion %d \n", tpdu->protocolversion);
-			return;
 		} else {
 			if((tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR) ||
 			   (tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_TALKER_FAILED_VECTOR)) {
-				rxState = avb_msrp_evaluateTalkerAdvertisement(msrp);
-				avb_msrp_listenerdeclarations(msrp, true, rxState);
+				msrp->rxState = avb_msrp_evaluateTalkerAdvertisement(msrp);
+				avb_msrp_listenerdeclarations(msrp, true, msrp->rxState);
 			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_LISTENER_VECTOR) {
-				avb_msrp_evaluateListnerAdvertisement(msrp);
+				msrp->txState = avb_msrp_evaluateListnerAdvertisement(msrp);
 			} else if(tpdu->msg.attributetype == MSRP_ATTRIBUTE_TYPE_DOMAIN_VECTOR) {
 			} else {
 				printk(KERN_WARNING "avb_msrp_listen unknown attribute type %d \n", tpdu->msg.attributetype);
 				return;
-			}		
+			}
+
+			printk(AVB_KERN_INFO "avb_msrp_listen: rxType: %d, rxState: %d, txState: %d", tpdu->msg.attributetype,
+				msrp->rxState, msrp->txState);		
 		}
-	} else {
-		printk(KERN_WARNING "avb_msrp_listen Socket reception fails %d \n", err);
-		return;
 	}
 }
 
@@ -850,7 +890,7 @@ static void avbWqFn(struct work_struct *work)
 		if(wd->dw.msrp->initialized == false) {
 			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 10000);
 		} else {
-			if(initDone == false) {
+			if(wd->dw.msrp->txState == MSRP_DECLARATION_STATE_NONE) {
 				avb_msrp_talkerdeclarations(wd->dw.msrp, true);
 			}
 			avb_msrp_listen(wd->dw.msrp);
@@ -876,7 +916,7 @@ static void avbWqFn(struct work_struct *work)
 		
 			if(wd->dw.card->rx.fillsize >= wd->dw.card->rx.periodsize) {
 				wd->dw.card->rx.fillsize %= wd->dw.card->rx.periodsize;
-				snd_pcm_period_elapsed(wd->substream);
+				snd_pcm_period_elapsed(wd->dw.card->rx.substream);
 			}
 		}
 
