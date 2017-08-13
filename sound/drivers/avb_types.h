@@ -258,6 +258,7 @@ struct streaminfo {
 	snd_pcm_uframes_t prevHwIdx;
 	snd_pcm_uframes_t framecount;
 	struct snd_pcm_substream* substream;
+	unsigned char* tmpbuf;
 };
 
 struct avbcard {
@@ -278,7 +279,11 @@ struct workdata {
 };
 
 struct avbdevice {
+	int txts;
+	int rxts;
 	struct msrp msrp;
+	struct avbcard card;
+	struct snd_hwdep *hwdep;
 	struct timer_list txTimer;
 	struct workdata* msrpwd;
 	struct workdata* avtpwd;

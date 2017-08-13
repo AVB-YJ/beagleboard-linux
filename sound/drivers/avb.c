@@ -21,6 +21,7 @@
 #include <sound/pcm.h>
 #include <sound/info.h>
 #include <sound/initval.h>
+#include <sound/hwdep.h>
 
 #include <linux/netdevice.h>
 #include <linux/ip.h>
@@ -309,7 +310,7 @@ static void avb_avtp_aaf_header_init(char* buf, struct snd_pcm_substream *substr
 	AVB_AVTP_AAF_HDR_SET_CPF(hdr, params_channels(hw_params));
 	hdr->h.f.bitDepth = substream->runtime->sample_bits;
 	hdr->h.f.streamDataLen = 0;
-	AVB_AVTP_AAF_HDR_SET_SP(hdr, 0);
+	AVB_AVTP_AAF_HDR_SET_SP(hdr, 1);
 	AVB_AVTP_AAF_HDR_SET_EVT(hdr, 0);
 }
 
@@ -345,19 +346,6 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 	avbcard->tx.buffersize = params_buffer_bytes(hw_params);
 	avbcard->tx.framecount = params_buffer_size(hw_params);
 	avbcard->tx.framesize  = params_buffer_bytes(hw_params) / params_buffer_size(hw_params);
-
-	avbcard->sd.type = ETH_P_TSN;
-	avbcard->sd.destmac[0] = 0x01;
-	avbcard->sd.destmac[1] = 0x80;
-	avbcard->sd.destmac[2] = 0xC2;
-	avbcard->sd.destmac[3] = 0x00;
-	avbcard->sd.destmac[4] = 0x00;
-	avbcard->sd.destmac[5] = 0x0E;
-
-	if(!avb_socket_init(&avbcard->sd, 100)) {
-		printk(AVB_KERN_INFO "avb_playback_hw_params socket init failed");
-		return -1;	
-	}
 
 	avb_avtp_aaf_header_init(&avbcard->sd.txBuf[0], substream, hw_params);
 
@@ -437,6 +425,7 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
 		txSize = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
 		bytesToCopy = (AVB_AVTP_AAF_SAMPLES_PER_PACKET * (substream->runtime->frame_bits / 8));
 
+		hdr->h.f.avtpTS = avbdevice.txts;
 		hdr->h.f.streamDataLen = bytesToCopy;
 
 		if((err = copy_from_user(&avbcard->sd.txBuf[txSize], (&((u8*)dst)[copiedBytes]), bytesToCopy)) == 0) {
@@ -448,7 +437,8 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
 		txSize += bytesToCopy;
 		copidFrames += AVB_AVTP_AAF_SAMPLES_PER_PACKET;
 
-		printk(AVB_KERN_INFO "avb_playback_copy: bys2Cp:%lu, cpdBys: %lu, cpdFrs: %lu", bytesToCopy, copiedBytes, copidFrames);
+		printk(AVB_KERN_INFO "avb_copy: bys2Cp:%lu, cpdBys: %lu, cpdFrs: %lu, ts: %u",
+			bytesToCopy, copiedBytes, copidFrames, hdr->h.f.avtpTS);
 
 		avbcard->sd.txiov.iov_base = avbcard->sd.txBuf;
 		avbcard->sd.txiov.iov_len  = txSize;
@@ -543,19 +533,26 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 			
 	queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
 
-	return snd_pcm_lib_alloc_vmalloc_buffer(substream, avbcard->rx.buffersize);
+	avbcard->rx.tmpbuf = kmalloc(avbcard->rx.buffersize, GFP_KERNEL);
+
+	return 0;
 }
 
 static int avb_capture_hw_free(struct snd_pcm_substream *substream)
 {
+	struct avbcard *avbcard = snd_pcm_substream_chip(substream);
+
 	printk(AVB_KERN_INFO "avb_capture_hw_free");
 
 	if(avbdevice.avtpwd != NULL) {
 		cancel_delayed_work((struct delayed_work*)avbdevice.avtpwd);
 		kfree(avbdevice.avtpwd);
+		avbdevice.avtpwd = NULL;
 	}
 
-	return snd_pcm_lib_free_vmalloc_buffer(substream);
+	kfree(avbcard->rx.tmpbuf);
+
+	return 0;
 }
 
 static int avb_capture_prepare(struct snd_pcm_substream *substream)
@@ -603,7 +600,8 @@ static int avb_capture_copy(struct snd_pcm_substream *substream,
 	int copyres = 0;
 	struct avbcard *avbcard = snd_pcm_substream_chip(substream);
 
-	srcbuf = (char*)snd_pcm_sgbuf_get_ptr(avbcard->rx.substream, (pos * avbcard->rx.framesize));
+	srcbuf = (char*)&avbcard->rx.tmpbuf[pos * avbcard->rx.framesize];
+	
 	copyres = copy_to_user(dst, srcbuf, (count * avbcard->rx.framesize));
 
 	printk(AVB_KERN_INFO "avb_capture_copy: ch:%d, pos: %ld, ct: %ld, res: %d", channel, pos, count, copyres);
@@ -620,24 +618,41 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 	char* destbuf;
 	int rxOff = 0;
 	int rxSize = 0;
+	int rxFrames = 0;
+	mm_segment_t oldfs;
 	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.rxBuf[sizeof(struct ethhdr)];
 
-	if ((err = sock_recvmsg(avbcard->sd.sock, &avbcard->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0)) > 0) {
+	memset(avbcard->sd.rxBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	avbcard->sd.rxiov.iov_base = avbcard->sd.rxBuf;
+	avbcard->sd.rxiov.iov_len = AVB_MSRP_ETH_FRAME_SIZE;
+	iov_iter_init(&avbcard->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &avbcard->sd.rxiov, 1, AVB_MSRP_ETH_FRAME_SIZE);
+
+	oldfs = get_fs();
+	set_fs(KERNEL_DS);
+	err = sock_recvmsg(avbcard->sd.sock, &avbcard->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0);
+	set_fs(oldfs);
+
+	if (err > 0) {
 		rxOff   = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
 		srcbuf  = (char*)&avbcard->sd.rxBuf[rxOff];
 
 		rxSize = hdr->h.f.streamDataLen;
-		destbuf = (char*)snd_pcm_sgbuf_get_ptr(avbcard->rx.substream, (avbcard->rx.hwIdx * avbcard->rx.framesize));
+		avbdevice.rxts = hdr->h.f.avtpTS;
+		destbuf = (char*)&avbcard->rx.tmpbuf[avbcard->rx.hwIdx * avbcard->rx.framesize];
 		
-		printk(AVB_KERN_INFO "avb_avtp_listen seq: %d, idx: %ld, sz:  %d", hdr->h.f.seqNo, avbcard->rx.hwIdx, rxSize);
+		rxFrames = (rxSize / avbcard->rx.framesize);
+
+		printk(AVB_KERN_INFO "avb_listen seq: %d, idx: %ld, sz: %d, ts: %u, rf: %d",
+			hdr->h.f.seqNo, avbcard->rx.hwIdx, rxSize, hdr->h.f.avtpTS, rxFrames);
 
 		memcpy(destbuf, srcbuf, rxSize);
 	} else {
-		printk(KERN_WARNING "avb_avtp_listen Socket reception fails %d \n", err);
+		if(err != -11)
+			printk(KERN_WARNING "avb_avtp_listen Socket reception fails %d \n", err);
 		return 0;
 	}
 
-	return rxSize;
+	return rxFrames;
 }
 
 static bool avb_msrp_init(struct msrp* msrp)
@@ -898,29 +913,34 @@ static void avbWqFn(struct work_struct *work)
 		}
 	} else if(wd->delayedWorkId == AVB_DELAY_WORK_AVTP) {
 
-		rxFrames = avb_avtp_listen(wd->dw.card);
+		memcpy(&avbdevice.card, wd->dw.card, sizeof(struct avbcard));
+
+		rxFrames = avb_avtp_listen(&avbdevice.card);
 
 		if(rxFrames > 0) {
-			wd->dw.card->rx.hwIdx += rxFrames;
-			wd->dw.card->rx.hwIdx %= wd->dw.card->rx.framecount;
+			avbdevice.card.rx.hwIdx += rxFrames;
+			avbdevice.card.rx.hwIdx %= avbdevice.card.rx.framecount;
 
-			if (wd->dw.card->rx.hwIdx < wd->dw.card->rx.prevHwIdx)
-		                fillsize = wd->dw.card->rx.framecount + wd->dw.card->rx.prevHwIdx - wd->dw.card->rx.hwIdx;
+			if (avbdevice.card.rx.hwIdx < avbdevice.card.rx.prevHwIdx)
+		                fillsize = avbdevice.card.rx.framecount + avbdevice.card.rx.prevHwIdx - avbdevice.card.rx.hwIdx;
 		        else
-		                fillsize = wd->dw.card->rx.hwIdx - wd->dw.card->rx.prevHwIdx;
+		                fillsize = avbdevice.card.rx.hwIdx - avbdevice.card.rx.prevHwIdx;
 
-			wd->dw.card->rx.prevHwIdx = wd->dw.card->rx.hwIdx;
-			wd->dw.card->rx.fillsize += fillsize;
+			avbdevice.card.rx.prevHwIdx = avbdevice.card.rx.hwIdx;
+			avbdevice.card.rx.fillsize += fillsize;
 
-			printk(AVB_KERN_INFO "avbWqFn: AVTP rxFrames:%d hwIdx:%lu fillSize: %lu", rxFrames, wd->dw.card->rx.hwIdx, wd->dw.card->rx.fillsize);
+			printk(AVB_KERN_INFO "avbWqFn: AVTP rxFrames:%d hwIdx:%lu fillSize: %lu", rxFrames, avbdevice.card.rx.hwIdx, avbdevice.card.rx.fillsize);
 		
-			if(wd->dw.card->rx.fillsize >= wd->dw.card->rx.periodsize) {
-				wd->dw.card->rx.fillsize %= wd->dw.card->rx.periodsize;
-				snd_pcm_period_elapsed(wd->dw.card->rx.substream);
+			if(avbdevice.card.rx.fillsize >= avbdevice.card.rx.periodsize) {
+				avbdevice.card.rx.fillsize %= avbdevice.card.rx.periodsize;
+				snd_pcm_period_elapsed(avbdevice.card.rx.substream);
 			}
 		}
 
-		queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
+		if(avbdevice.avtpwd != NULL) {
+			memcpy(wd->dw.card, &avbdevice.card, sizeof(struct avbcard));
+			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
+		}
 	} else {
 		printk(AVB_KERN_INFO "avbWqFn: Unknown: %d", wd->delayedWorkId);
 	}
@@ -945,6 +965,35 @@ static int avb_pcm_new(struct avbcard *avbc, int device, int substreams)
 	strcpy(pcm->name, "AVB PCM");
 
 	avbc->pcm[device] = pcm;
+
+	return 0;
+}
+
+static int avb_hwdep_open(struct snd_hwdep * hw, struct file *file)
+{
+	printk(AVB_KERN_INFO "avb_hwdep_open");
+
+	return 0;
+}
+
+static int avb_hwdep_ioctl(struct snd_hwdep * hw, struct file *file, unsigned int cmd, unsigned long arg)
+{
+	int res = 0;
+
+	if(cmd == 0) {
+		printk(AVB_KERN_INFO "avb_hwdep_ioctl set ts: %ld", arg);
+		avbdevice.txts = arg;
+	} else {
+		res = copy_to_user((void*)arg, &avbdevice.rxts, sizeof(unsigned long));
+		printk(AVB_KERN_INFO "avb_hwdep_ioctl get ts: %d, res: %d", avbdevice.rxts, res);
+	}
+
+	return 0;
+}
+
+static int avb_hwdep_release(struct snd_hwdep * hw, struct file *file)
+{
+	printk(AVB_KERN_INFO "avb_hwdep_release");
 
 	return 0;
 }
@@ -991,12 +1040,37 @@ static int avb_probe(struct platform_device *devptr)
 		goto __nodev;
 	}
 
+	err = snd_hwdep_new(card, "avbhw", 0, &avbdevice.hwdep);
+	if(err < 0) {
+		printk(AVB_KERN_INFO "avb_probe card hwdep new err: %d", err);
+		goto __nodev;
+	}
+	
+	avbdevice.hwdep->ops.open    = avb_hwdep_open;
+	avbdevice.hwdep->ops.ioctl   = avb_hwdep_ioctl;
+	avbdevice.hwdep->ops.release = avb_hwdep_release;
+
 	strcpy(card->driver, "avb");
 	strcpy(card->shortname, "avb");
 	sprintf(card->longname, "avb %i", dev + 1);
 	err = snd_card_register(card);
 	if (!err) {
 		platform_set_drvdata(devptr, card);
+	
+		avbcard->sd.type = ETH_P_TSN;
+		avbcard->sd.destmac[0] = 0x01;
+		avbcard->sd.destmac[1] = 0x80;
+		avbcard->sd.destmac[2] = 0xC2;
+		avbcard->sd.destmac[3] = 0x00;
+		avbcard->sd.destmac[4] = 0x00;
+		avbcard->sd.destmac[5] = 0x0E;
+
+		if(!avb_socket_init(&avbcard->sd, 100)) {
+			printk(AVB_KERN_INFO "avb_probe socket init failed");
+			err = -1;
+			goto __nodev;	
+		}
+
 		return 0;
 	}
 
