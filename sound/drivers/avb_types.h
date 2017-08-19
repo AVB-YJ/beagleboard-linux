@@ -25,7 +25,7 @@
 #define AVB_DELAY_WORK_MSRP                             (0)
 #define AVB_DELAY_WORK_AVTP                             (1)
 
-#define AVB_AVTP_AAF_SAMPLES_PER_PACKET		        (176)
+#define AVB_AVTP_AAF_SAMPLES_PER_PACKET		        (192)    /* 4ms * 48KHz i.e. Maxframes per jiffy for HZ=250 */
 #define AVB_MSRP_ETH_FRAME_SIZE                         (2048)
 
 #define MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR	(1)
@@ -257,6 +257,7 @@ struct streaminfo {
 	snd_pcm_uframes_t fillsize;
 	snd_pcm_uframes_t prevHwIdx;
 	snd_pcm_uframes_t framecount;
+	snd_pcm_uframes_t accumframecount;
 	struct snd_pcm_substream* substream;
 	unsigned char* tmpbuf;
 };
