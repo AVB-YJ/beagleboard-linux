@@ -25,6 +25,7 @@
 #define AVB_DELAY_WORK_MSRP                             (0)
 #define AVB_DELAY_WORK_AVTP                             (1)
 
+#define AVB_MAX_TS_SLOTS                                (12)
 #define AVB_AVTP_AAF_SAMPLES_PER_PACKET		        (192)    /* 4ms * 48KHz i.e. Maxframes per jiffy for HZ=250 */
 #define AVB_MSRP_ETH_FRAME_SIZE                         (2048)
 
@@ -249,6 +250,7 @@ struct streaminfo {
 	int sr;
 	unsigned long int startts;
 	snd_pcm_uframes_t hwIdx;
+	snd_pcm_uframes_t hwnwIdx;
 	snd_pcm_uframes_t numBytesConsumed;
 	snd_pcm_uframes_t periodsize;
 	snd_pcm_uframes_t pendingTxFrames;
@@ -280,8 +282,10 @@ struct workdata {
 };
 
 struct avbdevice {
-	int txts;
-	int rxts;
+	int txts[AVB_MAX_TS_SLOTS];
+	int rxts[AVB_MAX_TS_SLOTS];
+	int txIdx;
+	int rxIdx;
 	struct msrp msrp;
 	struct avbcard card;
 	struct snd_hwdep *hwdep;

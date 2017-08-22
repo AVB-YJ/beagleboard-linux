@@ -113,7 +113,7 @@ static struct snd_pcm_hardware avb_playback_hw = {
         .period_bytes_min = 4096,
         .period_bytes_max = 32768,
         .periods_min =      1,
-        .periods_max =      1024,
+        .periods_max =      4,
 };
 
 static struct snd_pcm_hardware avb_capture_hw = {
@@ -129,7 +129,7 @@ static struct snd_pcm_hardware avb_capture_hw = {
         .period_bytes_min = 4096,
         .period_bytes_max = 32768,
         .periods_min =      1,
-        .periods_max =      1024,
+        .periods_max =      4,
 };
 
 static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
@@ -339,6 +339,7 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 	avbcard->tx.substream = substream;
 	avbcard->tx.sr = params_rate(hw_params);
 	avbcard->tx.hwIdx = 0;
+	avbcard->tx.hwnwIdx = 0;
 	avbcard->tx.fillsize = 0;
 	avbcard->tx.pendingTxFrames = 0;
 	avbcard->tx.numBytesConsumed = 0;
@@ -351,6 +352,8 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 
 	init_timer(&avbdevice.txTimer);
 
+	memset(&avbdevice.txts[0], 0, (sizeof(int) * AVB_MAX_TS_SLOTS));
+	avbdevice.txIdx = 0;
 	avbdevice.txTimer.data     = (unsigned long)avbcard;
 	avbdevice.txTimer.function = avb_avtp_timer;
 	avbdevice.txTimer.expires  = jiffies + 1;
@@ -466,7 +469,7 @@ static void avb_avtp_timer(unsigned long arg)
 			memcpy(&avbcard->sd.txBuf[txSize+bytesAvai], &avbcard->tx.tmpbuf[0], (bytesToCopy - bytesAvai));
 		}
 
-		hdr->h.f.avtpTS = avbdevice.txts;
+		hdr->h.f.avtpTS = avbdevice.txts[((avbcard->tx.hwnwIdx / avbcard->tx.periodsize) % AVB_MAX_TS_SLOTS)];
 		hdr->h.f.streamDataLen = bytesToCopy;
 		txSize += bytesToCopy;
 
@@ -482,6 +485,7 @@ static void avb_avtp_timer(unsigned long arg)
 		avbcard->tx.accumframecount = ((avbcard->tx.accumframecount > framesToCopy)?(avbcard->tx.accumframecount - framesToCopy):(0));
 
 		avbcard->tx.hwIdx += framesToCopy;
+		avbcard->tx.hwnwIdx += framesToCopy;
 		avbcard->tx.fillsize += framesToCopy;
 		avbcard->tx.hwIdx = ((avbcard->tx.hwIdx < avbcard->tx.framecount)?(avbcard->tx.hwIdx):(avbcard->tx.hwIdx % avbcard->tx.framecount));
 		avbcard->tx.pendingTxFrames -= framesToCopy;
@@ -523,6 +527,7 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 
 	avbcard->rx.substream = substream;
 	avbcard->rx.hwIdx = 0;
+	avbcard->rx.hwnwIdx = 0;
 	avbcard->rx.fillsize = 0;
 	avbcard->rx.prevHwIdx = 0;
 	avbcard->rx.numBytesConsumed = 0;
@@ -539,6 +544,8 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 		return -1;
 	}
 
+	memset(&avbdevice.rxts[0], 0, (sizeof(int) * AVB_MAX_TS_SLOTS));
+	avbdevice.rxIdx = 0;
 	avbdevice.avtpwd->dw.card = avbcard;
 	avbdevice.avtpwd->delayedWorkId = AVB_DELAY_WORK_AVTP;
 	INIT_DELAYED_WORK((struct delayed_work*)avbdevice.avtpwd, avbWqFn);
@@ -652,7 +659,7 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 		rxSize = hdr->h.f.streamDataLen;
 		rxFrames = (rxSize / avbcard->rx.framesize);
 
-		avbdevice.rxts = hdr->h.f.avtpTS;
+		avbdevice.rxts[((avbcard->rx.hwnwIdx / avbcard->rx.periodsize) % AVB_MAX_TS_SLOTS)] = hdr->h.f.avtpTS;
 
 		printk(AVB_KERN_INFO "avb_listen seq: %d, idx: %ld, sz: %d, ts: %u, rf: %d",
 			hdr->h.f.seqNo, avbcard->rx.hwIdx, rxSize, hdr->h.f.avtpTS, rxFrames);
@@ -939,6 +946,7 @@ static void avbWqFn(struct work_struct *work)
 
 		if(rxFrames > 0) {
 			avbdevice.card.rx.hwIdx += rxFrames;
+			avbdevice.card.rx.hwnwIdx += rxFrames;
 			avbdevice.card.rx.hwIdx %= avbdevice.card.rx.framecount;
 
 			if (avbdevice.card.rx.hwIdx < avbdevice.card.rx.prevHwIdx)
@@ -1001,11 +1009,15 @@ static int avb_hwdep_ioctl(struct snd_hwdep * hw, struct file *file, unsigned in
 	int res = 0;
 
 	if(cmd == 0) {
-		printk(AVB_KERN_INFO "avb_hwdep_ioctl set ts: %ld", arg);
-		avbdevice.txts = arg;
+		printk(AVB_KERN_INFO "avb_hwdep_ioctl set ts: %ld @ idx: %d", arg, avbdevice.txIdx);
+		avbdevice.txts[avbdevice.txIdx] = arg;
+		avbdevice.txIdx++;
+		avbdevice.txIdx %= AVB_MAX_TS_SLOTS;
 	} else {
-		res = copy_to_user((void*)arg, &avbdevice.rxts, sizeof(unsigned long));
-		printk(AVB_KERN_INFO "avb_hwdep_ioctl get ts: %d, res: %d", avbdevice.rxts, res);
+		res = copy_to_user((void*)arg, &avbdevice.rxts[avbdevice.rxIdx], sizeof(unsigned long));
+		printk(AVB_KERN_INFO "avb_hwdep_ioctl get ts: %d @ %d, res: %d", avbdevice.rxts[avbdevice.rxIdx], avbdevice.rxIdx, res);
+		avbdevice.rxIdx++;
+		avbdevice.rxIdx %= AVB_MAX_TS_SLOTS;
 	}
 
 	return 0;
