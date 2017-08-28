@@ -1,6 +1,8 @@
 
 #define SND_AVB_DRIVER		"snd_avb"
 
+/* #define AVB_DEBUG */
+
 #define ETH_MSRP                (0x22EA)
 
 #define SND_AVB_NUM_CARDS	(SNDRV_CARDS)
@@ -11,14 +13,14 @@
 #define AVB_PM_OPS	NULL
 #endif
 
-#define AVB_KERN_EMERG KERN_EMERG	/* system is unusable */
-#define AVB_KERN_ALERT KERN_ALERT	/* action must be taken immediately */
-#define AVB_KERN_CRIT  KERN_CRIT	/* critical conditions */
-#define AVB_KERN_ERR   KERN_ERR		/* error conditions */
-#define AVB_KERN_WARN  KERN_WARNING	/* warning conditions */
-#define AVB_KERN_NOT   KERN_NOTICE	/* normal but significant condition */
-#define AVB_KERN_INFO  KERN_INFO	/* informational */
-#define AVB_KERN_DEBUG KERN_DEBUG	/* debug-level messages */
+#define AVB_KERN_EMERG 0	/* system is unusable */
+#define AVB_KERN_ALERT 1	/* action must be taken immediately */
+#define AVB_KERN_CRIT  2	/* critical conditions */
+#define AVB_KERN_ERR   3	/* error conditions */
+#define AVB_KERN_WARN  4	/* warning conditions */
+#define AVB_KERN_NOT   5	/* normal but significant condition */
+#define AVB_KERN_INFO  6	/* informational */
+#define AVB_KERN_DEBUG 7	/* debug-level messages */
 
 #define AVB_WQ "AVBWQ"
 
@@ -295,6 +297,7 @@ struct avbdevice {
 	struct workqueue_struct* wq;
 };
 
+static void avb_log(int level, char* fmt, ...);
 static bool avb_socket_init(struct socketdata* sd, int rxTimeout);
 
 static int avb_get_avtp_aaf_nsr(int sampleRate);
