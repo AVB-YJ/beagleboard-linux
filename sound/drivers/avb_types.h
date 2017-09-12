@@ -250,6 +250,8 @@ struct msrp {
 
 struct streaminfo {
 	int sr;
+	int seqNo;
+	int socketCount;
 	unsigned long int startts;
 	snd_pcm_uframes_t hwIdx;
 	snd_pcm_uframes_t hwnwIdx;

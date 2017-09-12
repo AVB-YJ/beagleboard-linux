@@ -45,6 +45,8 @@ MODULE_DESCRIPTION("AVB soundcard");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("{{ALSA,AVB soundcard}}");
 
+#define AVB_DEBUG
+
 static int index[SND_AVB_NUM_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SND_AVB_NUM_CARDS] = SNDRV_DEFAULT_STR;
 static bool enable[SND_AVB_NUM_CARDS] = {1, [1 ... (SND_AVB_NUM_CARDS - 1)] = 0};
@@ -379,8 +381,10 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 	avbcard->tx.substream = substream;
 	avbcard->tx.sr = params_rate(hw_params);
 	avbcard->tx.hwIdx = 0;
+	avbcard->tx.seqNo = 0;
 	avbcard->tx.hwnwIdx = 0;
 	avbcard->tx.fillsize = 0;
+	avbcard->tx.socketCount = 0;
 	avbcard->tx.pendingTxFrames = 0;
 	avbcard->tx.numBytesConsumed = 0;
 	avbcard->tx.periodsize = params_period_size(hw_params);
@@ -480,6 +484,7 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
 
 static void avb_avtp_timer(unsigned long arg)
 {
+	int i = 0;
 	int err = 0;
 	int txSize = 0;
 	snd_pcm_uframes_t bytesAvai = 0;
@@ -491,10 +496,13 @@ static void avb_avtp_timer(unsigned long arg)
 
 	avbcard->tx.accumframecount += frameCount;
 
-	if((avbcard->tx.accumframecount >= AVB_AVTP_AAF_SAMPLES_PER_PACKET) ||
-	   (avbcard->tx.pendingTxFrames <= AVB_AVTP_AAF_SAMPLES_PER_PACKET)) { 
+	while(((avbcard->tx.accumframecount >= AVB_AVTP_AAF_SAMPLES_PER_PACKET) ||
+	       (avbcard->tx.pendingTxFrames <= AVB_AVTP_AAF_SAMPLES_PER_PACKET)) &&
+	      (i < 2)) { 
 
-		hdr->h.f.seqNo++;
+		i++;
+		avbcard->tx.seqNo++;
+		hdr->h.f.seqNo = avbcard->tx.seqNo;
 
 		txSize = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
 		framesToCopy = ((avbcard->tx.pendingTxFrames > AVB_AVTP_AAF_SAMPLES_PER_PACKET)?(AVB_AVTP_AAF_SAMPLES_PER_PACKET):(avbcard->tx.pendingTxFrames));
@@ -530,8 +538,8 @@ static void avb_avtp_timer(unsigned long arg)
 		avbcard->tx.hwIdx = ((avbcard->tx.hwIdx < avbcard->tx.framecount)?(avbcard->tx.hwIdx):(avbcard->tx.hwIdx % avbcard->tx.framecount));
 		avbcard->tx.pendingTxFrames -= framesToCopy;
 
-		avb_log(AVB_KERN_INFO, KERN_INFO "avb_avtp_timer hwIdx: %lu, afrCt: %lu, penFrs:%lu, filSz:%lu",
-			avbcard->tx.hwIdx, avbcard->tx.accumframecount, avbcard->tx.pendingTxFrames, avbcard->tx.fillsize);
+		avb_log(AVB_KERN_INFO, KERN_INFO "avb_avtp_timer seqNo:%d, hwIdx: %lu, afrCt: %lu, penFrs:%lu, filSz:%lu",
+			hdr->h.f.seqNo, avbcard->tx.hwIdx, avbcard->tx.accumframecount, avbcard->tx.pendingTxFrames, avbcard->tx.fillsize);
 
 		if(avbcard->tx.fillsize >= avbcard->tx.periodsize) {
 			avbcard->tx.fillsize %= avbcard->tx.periodsize;
@@ -567,9 +575,11 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 
 	avbcard->rx.substream = substream;
 	avbcard->rx.hwIdx = 0;
+	avbcard->rx.seqNo = 0;
 	avbcard->rx.hwnwIdx = 0;
 	avbcard->rx.fillsize = 0;
 	avbcard->rx.prevHwIdx = 0;
+	avbcard->rx.socketCount = 0;
 	avbcard->rx.numBytesConsumed = 0;
 	avbcard->rx.periodsize = params_period_size(hw_params);
 	avbcard->rx.buffersize = params_buffer_bytes(hw_params);
@@ -589,7 +599,7 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 	avbdevice.avtpwd->dw.card = avbcard;
 	avbdevice.avtpwd->delayedWorkId = AVB_DELAY_WORK_AVTP;
 	INIT_DELAYED_WORK((struct delayed_work*)avbdevice.avtpwd, avbWqFn);
-			
+
 	queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
 
 	avbcard->rx.tmpbuf = kmalloc(avbcard->rx.buffersize, GFP_KERNEL);
@@ -677,9 +687,14 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 	char* destbuf;
 	int rxOff = 0;
 	int rxSize = 0;
+	int nrxSize = 0;
 	int avaiSize = 0;
 	int rxFrames = 0;
+	int nrxFrames = 0;
+	int nextSeqNo = 0;
+	int skippedPackets = 0;
 	mm_segment_t oldfs;
+	snd_pcm_uframes_t hwIdx = 0;
 	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.rxBuf[sizeof(struct ethhdr)];
 
 	memset(avbcard->sd.rxBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
@@ -693,6 +708,8 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 	set_fs(oldfs);
 
 	if (err > 0) {
+		avbcard->rx.socketCount++;
+
 		rxOff   = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
 		srcbuf  = (char*)&avbcard->sd.rxBuf[rxOff];
 
@@ -701,12 +718,45 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 
 		avbdevice.rxts[((avbcard->rx.hwnwIdx / avbcard->rx.periodsize) % AVB_MAX_TS_SLOTS)] = hdr->h.f.avtpTS;
 
-		avb_log(AVB_KERN_INFO, KERN_INFO "avb_listen seq: %d, idx: %ld, sz: %d, ts: %u, rf: %d",
-			hdr->h.f.seqNo, avbcard->rx.hwIdx, rxSize, hdr->h.f.avtpTS, rxFrames);
+		nextSeqNo = (avbcard->rx.seqNo + 1) % 256;
 
-		avaiSize = ((avbcard->rx.framecount - avbcard->rx.hwIdx) * avbcard->rx.framesize);
+		if(nextSeqNo != hdr->h.f.seqNo) {
+			avb_log(AVB_KERN_INFO, KERN_ERR "avb_listen missing frames from %d to %d \n",
+				avbcard->rx.seqNo, hdr->h.f.seqNo);
+
+			skippedPackets = ((hdr->h.f.seqNo >= avbcard->rx.seqNo)? \
+						(hdr->h.f.seqNo - avbcard->rx.seqNo): \
+						((hdr->h.f.seqNo + 255) - avbcard->rx.seqNo));
+			nrxFrames = (skippedPackets * rxFrames);
+			nrxSize = nrxFrames * avbcard->rx.framesize;
+
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_listen idx: %ld nrsz: %d, nrf: %d \n",
+				avbcard->rx.hwIdx, nrxSize, nrxFrames);
+
+			avaiSize = ((avbcard->rx.framecount - avbcard->rx.hwIdx) * avbcard->rx.framesize);
+			avaiSize = ((avaiSize < nrxSize)?(avaiSize):(nrxSize));
+			destbuf  = (char*)&avbcard->rx.tmpbuf[avbcard->rx.hwIdx * avbcard->rx.framesize];
+			memset(destbuf, 0, avaiSize);
+
+			if(avaiSize < nrxSize) {
+				destbuf  = (char*)&avbcard->rx.tmpbuf[0];
+				memset(destbuf, 0, (nrxSize - avaiSize));
+			}
+
+			hwIdx = ((avbcard->rx.hwIdx + nrxFrames) % (avbcard->rx.framecount));
+			rxFrames = rxFrames + nrxFrames;
+		} else {
+			hwIdx = avbcard->rx.hwIdx;
+		}
+
+		avb_log(AVB_KERN_INFO, KERN_INFO "avb_listen (%d) seq: %d, idx: %ld, sz: %d, ts: %u, rf: %d \n",
+			avbcard->rx.socketCount, hdr->h.f.seqNo, hwIdx, rxSize, hdr->h.f.avtpTS, rxFrames);
+
+		avbcard->rx.seqNo = hdr->h.f.seqNo;
+
+		avaiSize = ((avbcard->rx.framecount - hwIdx) * avbcard->rx.framesize);
 		avaiSize = ((avaiSize < rxSize)?(avaiSize):(rxSize));
-		destbuf  = (char*)&avbcard->rx.tmpbuf[avbcard->rx.hwIdx * avbcard->rx.framesize];
+		destbuf  = (char*)&avbcard->rx.tmpbuf[hwIdx * avbcard->rx.framesize];
 		memcpy(destbuf, srcbuf, avaiSize);
 
 		if(avaiSize < rxSize) {
@@ -927,6 +977,7 @@ static void avb_msrp_listen(struct msrp* msrp)
 	set_fs(KERNEL_DS);
 	err = sock_recvmsg(msrp->sd.sock, &msrp->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0);
 	set_fs(oldfs);
+	
 
 	if (err <= 0) {
 		if(err != -11)
@@ -962,7 +1013,7 @@ static void avbWqFn(struct work_struct *work)
 	struct workdata* wd = (struct workdata*)work;
 
 	if(wd->delayedWorkId == AVB_DELAY_WORK_MSRP) {
-		avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: MSRP");
+		avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: MSRP @ %lu", jiffies);
 
 		if(wd->dw.msrp->initialized == false) {
 			initDone = false;
@@ -976,34 +1027,43 @@ static void avbWqFn(struct work_struct *work)
 				avb_msrp_talkerdeclarations(wd->dw.msrp, true);
 			}
 			avb_msrp_listen(wd->dw.msrp);
-			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 2000);
+
+			if((wd->dw.msrp->txState != MSRP_DECLARATION_STATE_READY) ||
+			   (wd->dw.msrp->rxState != MSRP_DECLARATION_STATE_READY)) {
+				queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 2000);
+			}
 		}
 	} else if(wd->delayedWorkId == AVB_DELAY_WORK_AVTP) {
 
 		memcpy(&avbdevice.card, wd->dw.card, sizeof(struct avbcard));
 
-		rxFrames = avb_avtp_listen(&avbdevice.card);
+		do {
+			rxFrames = avb_avtp_listen(&avbdevice.card);
 
-		if(rxFrames > 0) {
-			avbdevice.card.rx.hwIdx += rxFrames;
-			avbdevice.card.rx.hwnwIdx += rxFrames;
-			avbdevice.card.rx.hwIdx %= avbdevice.card.rx.framecount;
+			if(rxFrames > 0) {
+				avbdevice.card.rx.hwIdx += rxFrames;
+				avbdevice.card.rx.hwnwIdx += rxFrames;
+				avbdevice.card.rx.hwIdx %= avbdevice.card.rx.framecount;
 
-			if (avbdevice.card.rx.hwIdx < avbdevice.card.rx.prevHwIdx)
-		                fillsize = avbdevice.card.rx.framecount + avbdevice.card.rx.prevHwIdx - avbdevice.card.rx.hwIdx;
-		        else
-		                fillsize = avbdevice.card.rx.hwIdx - avbdevice.card.rx.prevHwIdx;
+				if (avbdevice.card.rx.hwIdx < avbdevice.card.rx.prevHwIdx)
+				        fillsize = avbdevice.card.rx.framecount + avbdevice.card.rx.prevHwIdx - avbdevice.card.rx.hwIdx;
+				else
+				        fillsize = avbdevice.card.rx.hwIdx - avbdevice.card.rx.prevHwIdx;
 
-			avbdevice.card.rx.prevHwIdx = avbdevice.card.rx.hwIdx;
-			avbdevice.card.rx.fillsize += fillsize;
+				avbdevice.card.rx.prevHwIdx = avbdevice.card.rx.hwIdx;
+				avbdevice.card.rx.fillsize += fillsize;
 
-			avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: AVTP rxFrames:%d hwIdx:%lu fillSize: %lu", rxFrames, avbdevice.card.rx.hwIdx, avbdevice.card.rx.fillsize);
+				avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: AVTP @ %lu rxFrms:%d hwIdx:%lu filSz: %lu",
+					jiffies, rxFrames, avbdevice.card.rx.hwIdx, avbdevice.card.rx.fillsize);
 		
-			if(avbdevice.card.rx.fillsize >= avbdevice.card.rx.periodsize) {
-				avbdevice.card.rx.fillsize %= avbdevice.card.rx.periodsize;
-				snd_pcm_period_elapsed(avbdevice.card.rx.substream);
+				if(avbdevice.card.rx.fillsize >= avbdevice.card.rx.periodsize) {
+					avbdevice.card.rx.fillsize %= avbdevice.card.rx.periodsize;
+					snd_pcm_period_elapsed(avbdevice.card.rx.substream);
+				}
+			} else {
+				break;
 			}
-		}
+		} while(rxFrames > 0);
 
 		if(avbdevice.avtpwd != NULL) {
 			memcpy(wd->dw.card, &avbdevice.card, sizeof(struct avbcard));
