@@ -106,14 +106,14 @@ static struct snd_pcm_hardware avb_playback_hw = {
         .info = (SNDRV_PCM_INFO_INTERLEAVED |
                  SNDRV_PCM_INFO_BLOCK_TRANSFER),
         .formats =          SNDRV_PCM_FMTBIT_S16_LE,
-        .rates =            SNDRV_PCM_RATE_8000_48000,
+        .rates =            SNDRV_PCM_RATE_8000_192000,
         .rate_min =         8000,
-        .rate_max =         48000,
-        .channels_min =     2,
-        .channels_max =     2,
+        .rate_max =         192000,
+        .channels_min =     1,
+        .channels_max =     8,
         .buffer_bytes_max = 32768,
-        .period_bytes_min = 4096,
-        .period_bytes_max = 32768,
+        .period_bytes_min = 512,
+        .period_bytes_max = 8192,
         .periods_min =      1,
         .periods_max =      4,
 };
@@ -122,14 +122,14 @@ static struct snd_pcm_hardware avb_capture_hw = {
         .info = (SNDRV_PCM_INFO_INTERLEAVED |
                  SNDRV_PCM_INFO_BLOCK_TRANSFER),
         .formats =          SNDRV_PCM_FMTBIT_S16_LE,
-        .rates =            SNDRV_PCM_RATE_8000_48000,
+        .rates =            SNDRV_PCM_RATE_8000_192000,
         .rate_min =         8000,
-        .rate_max =         48000,
-        .channels_min =     2,
-        .channels_max =     2,
+        .rate_max =         192000,
+        .channels_min =     1,
+        .channels_max =     8,
         .buffer_bytes_max = 32768,
-        .period_bytes_min = 4096,
-        .period_bytes_max = 32768,
+        .period_bytes_min = 512,
+        .period_bytes_max = 8192,
         .periods_min =      1,
         .periods_max =      4,
 };
@@ -384,6 +384,7 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 	avbcard->tx.seqNo = 0;
 	avbcard->tx.hwnwIdx = 0;
 	avbcard->tx.fillsize = 0;
+	avbcard->tx.lastTimerTs = jiffies;
 	avbcard->tx.socketCount = 0;
 	avbcard->tx.pendingTxFrames = 0;
 	avbcard->tx.numBytesConsumed = 0;
@@ -474,6 +475,8 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
 	avbcard->tx.pendingTxFrames  += count;
 	avbcard->tx.numBytesConsumed += (count * (substream->runtime->frame_bits / 8));
 
+	avb_avtp_timer((unsigned long)avbcard);
+
 	if((avbcard->tx.pendingTxFrames > 0) && (!timer_pending(&avbdevice.txTimer))) {
 		avbdevice.txTimer.expires  = jiffies + 1;
 		add_timer(&avbdevice.txTimer);
@@ -490,22 +493,32 @@ static void avb_avtp_timer(unsigned long arg)
 	snd_pcm_uframes_t bytesAvai = 0;
 	snd_pcm_uframes_t bytesToCopy  = 0;
 	snd_pcm_uframes_t framesToCopy = 0;
+	snd_pcm_uframes_t avtpFramesPerPacket = 0;
+	snd_pcm_uframes_t avtpMaxFramesPerPacket = 0;
 	struct avbcard *avbcard = (struct avbcard *)arg;
-	snd_pcm_uframes_t frameCount = (avbcard->tx.sr / HZ);
+	unsigned long int numJiffies = ((jiffies > avbcard->tx.lastTimerTs)?(jiffies - avbcard->tx.lastTimerTs):(1));
+	snd_pcm_uframes_t frameCount = ((avbcard->tx.sr * numJiffies) / HZ);
 	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.txBuf[sizeof(struct ethhdr)];
 
 	avbcard->tx.accumframecount += frameCount;
 
-	while(((avbcard->tx.accumframecount >= AVB_AVTP_AAF_SAMPLES_PER_PACKET) ||
-	       (avbcard->tx.pendingTxFrames <= AVB_AVTP_AAF_SAMPLES_PER_PACKET)) &&
-	      (i < 2)) { 
+	avtpMaxFramesPerPacket = ((ETH_DATA_LEN - sizeof(struct avtPduAafPcmHdr)) / avbcard->tx.framesize);
+	avtpFramesPerPacket = (avbcard->tx.sr / HZ);
+	avtpFramesPerPacket = ((avtpFramesPerPacket > avtpMaxFramesPerPacket)?(avtpMaxFramesPerPacket):(avtpFramesPerPacket));
 
-		i++;
+	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avtp_timer ct: %lu, mfppk: %lu, fppk: %lu, frSz: %lu, sr: %lu, HZ: %lu",
+		frameCount, avtpMaxFramesPerPacket, avtpFramesPerPacket, avbcard->tx.framesize, avbcard->tx.sr, HZ);
+
+	while(((avbcard->tx.accumframecount >= avtpFramesPerPacket) ||
+	       (avbcard->tx.pendingTxFrames <= avtpFramesPerPacket)) &&
+	      ((avbcard->tx.pendingTxFrames > 0) && (i < 32))) { 
+
+		i++; /* Just as a failsafe to quit loop */
 		avbcard->tx.seqNo++;
 		hdr->h.f.seqNo = avbcard->tx.seqNo;
 
 		txSize = sizeof(struct ethhdr) + sizeof(struct avtPduAafPcmHdr);
-		framesToCopy = ((avbcard->tx.pendingTxFrames > AVB_AVTP_AAF_SAMPLES_PER_PACKET)?(AVB_AVTP_AAF_SAMPLES_PER_PACKET):(avbcard->tx.pendingTxFrames));
+		framesToCopy = ((avbcard->tx.pendingTxFrames > avtpFramesPerPacket)?(avtpFramesPerPacket):(avbcard->tx.pendingTxFrames));
 		bytesToCopy  = (framesToCopy * avbcard->tx.framesize);
 
 		bytesAvai = ((avbcard->tx.framecount - avbcard->tx.hwIdx) * avbcard->tx.framesize);
@@ -526,7 +539,7 @@ static void avb_avtp_timer(unsigned long arg)
 		iov_iter_init(&avbcard->sd.txMsgHdr.msg_iter, WRITE | ITER_KVEC, &avbcard->sd.txiov, 1, txSize);
 
 		if ((err = sock_sendmsg(avbcard->sd.sock, &avbcard->sd.txMsgHdr)) <= 0) {
-			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_playback_copy Socket transmission fails %d \n", err);
+			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_avtp_timer Socket transmission fails %d \n", err);
 			return;
 		}
 
@@ -547,10 +560,12 @@ static void avb_avtp_timer(unsigned long arg)
 		}
 	}
 
-	if(avbcard->tx.pendingTxFrames > 0) {
+	if((avbcard->tx.pendingTxFrames > 0) && (!timer_pending(&avbdevice.txTimer))) {
 		avbdevice.txTimer.expires  = jiffies + 1;
 		add_timer(&avbdevice.txTimer);
 	}
+
+	avbcard->tx.lastTimerTs = jiffies;
 }
 
 static int avb_capture_open(struct snd_pcm_substream *substream)
@@ -1010,6 +1025,7 @@ static void avbWqFn(struct work_struct *work)
 	bool initDone = true;
 	int fillsize = 0;
 	int rxFrames = -1;
+	int rxLoopCount = 0;
 	struct workdata* wd = (struct workdata*)work;
 
 	if(wd->delayedWorkId == AVB_DELAY_WORK_MSRP) {
@@ -1053,8 +1069,8 @@ static void avbWqFn(struct work_struct *work)
 				avbdevice.card.rx.prevHwIdx = avbdevice.card.rx.hwIdx;
 				avbdevice.card.rx.fillsize += fillsize;
 
-				avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: AVTP @ %lu rxFrms:%d hwIdx:%lu filSz: %lu",
-					jiffies, rxFrames, avbdevice.card.rx.hwIdx, avbdevice.card.rx.fillsize);
+				avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: AVTP-%lu @ %lu rxFrms:%d hwIdx:%lu filSz: %lu",
+					rxLoopCount++, jiffies, rxFrames, avbdevice.card.rx.hwIdx, avbdevice.card.rx.fillsize);
 		
 				if(avbdevice.card.rx.fillsize >= avbdevice.card.rx.periodsize) {
 					avbdevice.card.rx.fillsize %= avbdevice.card.rx.periodsize;
@@ -1063,10 +1079,13 @@ static void avbWqFn(struct work_struct *work)
 			} else {
 				break;
 			}
+		
+
+			memcpy(wd->dw.card, &avbdevice.card, sizeof(struct avbcard));
+
 		} while(rxFrames > 0);
 
 		if(avbdevice.avtpwd != NULL) {
-			memcpy(wd->dw.card, &avbdevice.card, sizeof(struct avbcard));
 			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
 		}
 	} else {
