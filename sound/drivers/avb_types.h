@@ -13,6 +13,8 @@
 #define AVB_PM_OPS	NULL
 #endif
 
+#define AVB_USE_HIGH_RES_TIMER
+
 #define AVB_KERN_EMERG 0	/* system is unusable */
 #define AVB_KERN_ALERT 1	/* action must be taken immediately */
 #define AVB_KERN_CRIT  2	/* critical conditions */
@@ -250,8 +252,10 @@ struct msrp {
 
 struct streaminfo {
 	int sr;
+	int st;
 	int seqNo;
 	int socketCount;
+	unsigned long int timerVal;
 	unsigned long int lastTimerTs;
 	unsigned long int startts;
 	snd_pcm_uframes_t hwIdx;
@@ -286,6 +290,13 @@ struct workdata {
 	} dw;
 };
 
+#ifdef AVB_USE_HIGH_RES_TIMER
+struct avbhrtimer {
+	struct hrtimer timer;
+	struct avbcard* card;
+};
+#endif
+
 struct avbdevice {
 	int txts[AVB_MAX_TS_SLOTS];
 	int rxts[AVB_MAX_TS_SLOTS];
@@ -294,7 +305,11 @@ struct avbdevice {
 	struct msrp msrp;
 	struct avbcard card;
 	struct snd_hwdep *hwdep;
+#ifdef AVB_USE_HIGH_RES_TIMER
+	struct avbhrtimer txTimer;
+#else
 	struct timer_list txTimer;
+#endif	
 	struct workdata* msrpwd;
 	struct workdata* avtpwd;
 	struct workqueue_struct* wq;
@@ -318,7 +333,11 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
                        int channel, snd_pcm_uframes_t pos,
                        void __user *dst,
                        snd_pcm_uframes_t count);
+#ifdef AVB_USE_HIGH_RES_TIMER
+enum hrtimer_restart avb_avtp_timer(struct hrtimer* t);
+#else
 static void avb_avtp_timer(unsigned long arg);
+#endif
 
 static int avb_capture_open(struct snd_pcm_substream *substream);
 static int avb_capture_close(struct snd_pcm_substream *substream);

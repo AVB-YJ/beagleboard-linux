@@ -30,8 +30,10 @@
 #include <linux/un.h>
 #include <linux/unistd.h>
 #include <linux/ctype.h>
+#include <linux/hrtimer.h>
 
 #include <asm/unistd.h>
+#include <asm/div64.h>
 
 #include <net/sock.h>
 #include <net/tcp.h>
@@ -111,9 +113,9 @@ static struct snd_pcm_hardware avb_playback_hw = {
         .rate_max =         192000,
         .channels_min =     1,
         .channels_max =     8,
-        .buffer_bytes_max = 32768,
-        .period_bytes_min = 512,
-        .period_bytes_max = 8192,
+        .buffer_bytes_max = 131072,
+        .period_bytes_min = 16384,
+        .period_bytes_max = 131072,
         .periods_min =      1,
         .periods_max =      4,
 };
@@ -127,9 +129,9 @@ static struct snd_pcm_hardware avb_capture_hw = {
         .rate_max =         192000,
         .channels_min =     1,
         .channels_max =     8,
-        .buffer_bytes_max = 32768,
-        .period_bytes_min = 512,
-        .period_bytes_max = 8192,
+        .buffer_bytes_max = 131072,
+        .period_bytes_min = 16384,
+        .period_bytes_max = 131072,
         .periods_min =      1,
         .periods_max =      4,
 };
@@ -379,6 +381,7 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 	avb_log(AVB_KERN_NOT, KERN_NOTICE "avb_playback_hw_params numbytes:%d sr:%d", params_buffer_bytes(hw_params), params_rate(hw_params));
 
 	avbcard->tx.substream = substream;
+	avbcard->tx.st = 0;
 	avbcard->tx.sr = params_rate(hw_params);
 	avbcard->tx.hwIdx = 0;
 	avbcard->tx.seqNo = 0;
@@ -395,14 +398,20 @@ static int avb_playback_hw_params(struct snd_pcm_substream *substream, struct sn
 
 	avb_avtp_aaf_header_init(&avbcard->sd.txBuf[0], substream, hw_params);
 
+#ifdef AVB_USE_HIGH_RES_TIMER
+	hrtimer_init((struct hrtimer*)&avbdevice.txTimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	avbdevice.txTimer.timer.function = &avb_avtp_timer;
+	avbdevice.txTimer.card = avbcard;
+#else
 	init_timer(&avbdevice.txTimer);
-
-	memset(&avbdevice.txts[0], 0, (sizeof(int) * AVB_MAX_TS_SLOTS));
-	avbdevice.txIdx = 0;
 	avbdevice.txTimer.data     = (unsigned long)avbcard;
 	avbdevice.txTimer.function = avb_avtp_timer;
 	avbdevice.txTimer.expires  = jiffies + 1;
 	add_timer(&avbdevice.txTimer);
+#endif
+
+	memset(&avbdevice.txts[0], 0, (sizeof(int) * AVB_MAX_TS_SLOTS));
+	avbdevice.txIdx = 0;
 
 	avbcard->tx.tmpbuf = kmalloc(avbcard->tx.buffersize, GFP_KERNEL);
 
@@ -415,7 +424,11 @@ static int avb_playback_hw_free(struct snd_pcm_substream *substream)
 
 	avb_log(AVB_KERN_NOT, KERN_NOTICE "avb_playback_hw_free");
 
+#ifdef AVB_USE_HIGH_RES_TIMER
+	 hrtimer_try_to_cancel((struct hrtimer*)&avbdevice.txTimer);
+#else
 	del_timer(&avbdevice.txTimer);
+#endif	
 	kfree(avbcard->tx.tmpbuf);
 
 	return 0;
@@ -428,16 +441,34 @@ static int avb_playback_prepare(struct snd_pcm_substream *substream)
 
 static int avb_playback_trigger(struct snd_pcm_substream *substream, int cmd)
 {
+	ktime_t kt;
 	int ret = 0;
+	int avtpMaxFramesPerPacket = 0;
 	struct avbcard *avbcard = snd_pcm_substream_chip(substream);
 
         switch (cmd) {
         case SNDRV_PCM_TRIGGER_START:
+		avbcard->tx.st = 1;
                 avb_log(AVB_KERN_NOT, KERN_NOTICE "avb_playback_trigger: Start @ %lu", jiffies);
+#ifdef AVB_USE_HIGH_RES_TIMER
+		avtpMaxFramesPerPacket = ((ETH_DATA_LEN - sizeof(struct avtPduAafPcmHdr)) / avbcard->tx.framesize);
+		avbcard->tx.timerVal = ((avtpMaxFramesPerPacket * 1000000u) / (avbcard->tx.sr / 1000));
+		kt = ktime_set(0, avbcard->tx.timerVal);
+		hrtimer_start((struct hrtimer*)&avbdevice.txTimer, kt, HRTIMER_MODE_REL);
+#else
 		avbcard->tx.startts = jiffies;
+		if((avbcard->tx.pendingTxFrames > 0) && (!timer_pending(&avbdevice.txTimer))) {
+			avbdevice.txTimer.expires  = jiffies + 1;
+			add_timer(&avbdevice.txTimer);
+		}
+#endif
                 break;
         case SNDRV_PCM_TRIGGER_STOP:
                 avb_log(AVB_KERN_NOT, KERN_NOTICE "avb_playback_trigger: Stop @ %lu", jiffies);
+		avbcard->tx.st = 0;
+#ifdef AVB_USE_HIGH_RES_TIMER
+		 hrtimer_try_to_cancel((struct hrtimer*)&avbdevice.txTimer);
+#endif
                 break;
         default:
 		avb_log(AVB_KERN_WARN, KERN_WARNING "avb_playback_trigger: Unknown");
@@ -475,18 +506,26 @@ static int avb_playback_copy(struct snd_pcm_substream *substream,
 	avbcard->tx.pendingTxFrames  += count;
 	avbcard->tx.numBytesConsumed += (count * (substream->runtime->frame_bits / 8));
 
-	avb_avtp_timer((unsigned long)avbcard);
-
-	if((avbcard->tx.pendingTxFrames > 0) && (!timer_pending(&avbdevice.txTimer))) {
+#ifndef AVB_USE_HIGH_RES_TIMER
+	if(avbcard->tx.st == 1) {
+		avb_avtp_timer((unsigned long)avbcard);
+	}
+	if((avbcard->tx.pendingTxFrames > 0) && (!timer_pending(&avbdevice.txTimer) && (avbcard->tx.st == 1))) {
 		avbdevice.txTimer.expires  = jiffies + 1;
 		add_timer(&avbdevice.txTimer);
 	}
+#endif
 
 	return 0;
 }
 
+#ifdef AVB_USE_HIGH_RES_TIMER
+enum hrtimer_restart avb_avtp_timer(struct hrtimer* t)
+#else
 static void avb_avtp_timer(unsigned long arg)
+#endif
 {
+	ktime_t kt;
 	int i = 0;
 	int err = 0;
 	int txSize = 0;
@@ -495,24 +534,41 @@ static void avb_avtp_timer(unsigned long arg)
 	snd_pcm_uframes_t framesToCopy = 0;
 	snd_pcm_uframes_t avtpFramesPerPacket = 0;
 	snd_pcm_uframes_t avtpMaxFramesPerPacket = 0;
+	enum hrtimer_restart hrRes = HRTIMER_NORESTART;
+#ifdef AVB_USE_HIGH_RES_TIMER
+	struct avbcard *avbcard = ((struct avbhrtimer *)t)->card;
+#else
 	struct avbcard *avbcard = (struct avbcard *)arg;
+#endif
+	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.txBuf[sizeof(struct ethhdr)];
+#ifndef AVB_USE_HIGH_RES_TIMER
 	unsigned long int numJiffies = ((jiffies > avbcard->tx.lastTimerTs)?(jiffies - avbcard->tx.lastTimerTs):(1));
 	snd_pcm_uframes_t frameCount = ((avbcard->tx.sr * numJiffies) / HZ);
-	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.txBuf[sizeof(struct ethhdr)];
-
-	avbcard->tx.accumframecount += frameCount;
+#endif
 
 	avtpMaxFramesPerPacket = ((ETH_DATA_LEN - sizeof(struct avtPduAafPcmHdr)) / avbcard->tx.framesize);
+
+#ifdef AVB_USE_HIGH_RES_TIMER
+	avbcard->tx.accumframecount += avtpMaxFramesPerPacket;
+	avtpFramesPerPacket = avtpMaxFramesPerPacket;
+	kt = ktime_set(0, avbcard->tx.timerVal);
+	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avtp_timer mfppk: %lu, fppk: %lu, frSz: %lu, sr: %lu, time: %lu",
+		avtpMaxFramesPerPacket, avtpFramesPerPacket, avbcard->tx.framesize, avbcard->tx.sr, avbcard->tx.timerVal);
+#else
+	avbcard->tx.accumframecount += frameCount;
 	avtpFramesPerPacket = (avbcard->tx.sr / HZ);
 	avtpFramesPerPacket = ((avtpFramesPerPacket > avtpMaxFramesPerPacket)?(avtpMaxFramesPerPacket):(avtpFramesPerPacket));
-
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avtp_timer ct: %lu, mfppk: %lu, fppk: %lu, frSz: %lu, sr: %lu, HZ: %lu",
 		frameCount, avtpMaxFramesPerPacket, avtpFramesPerPacket, avbcard->tx.framesize, avbcard->tx.sr, HZ);
+#endif
 
 	while(((avbcard->tx.accumframecount >= avtpFramesPerPacket) ||
 	       (avbcard->tx.pendingTxFrames <= avtpFramesPerPacket)) &&
-	      ((avbcard->tx.pendingTxFrames > 0) && (i < 32))) { 
-
+#ifdef AVB_USE_HIGH_RES_TIMER
+	      ((avbcard->tx.pendingTxFrames > 0) && (i < 1))) { 
+#else
+	      ((avbcard->tx.pendingTxFrames > 0) && (frameCount > 0) && (i < 32))) { 
+#endif
 		i++; /* Just as a failsafe to quit loop */
 		avbcard->tx.seqNo++;
 		hdr->h.f.seqNo = avbcard->tx.seqNo;
@@ -540,7 +596,7 @@ static void avb_avtp_timer(unsigned long arg)
 
 		if ((err = sock_sendmsg(avbcard->sd.sock, &avbcard->sd.txMsgHdr)) <= 0) {
 			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_avtp_timer Socket transmission fails %d \n", err);
-			return;
+			goto end;
 		}
 
 		avbcard->tx.accumframecount = ((avbcard->tx.accumframecount > framesToCopy)?(avbcard->tx.accumframecount - framesToCopy):(0));
@@ -560,12 +616,21 @@ static void avb_avtp_timer(unsigned long arg)
 		}
 	}
 
+end:
+#ifdef AVB_USE_HIGH_RES_TIMER
+	if(avbcard->tx.st == 1) {
+		hrtimer_forward_now(t, kt);
+		hrRes = HRTIMER_RESTART;	
+	}
+
+	return hrRes;
+#else
 	if((avbcard->tx.pendingTxFrames > 0) && (!timer_pending(&avbdevice.txTimer))) {
 		avbdevice.txTimer.expires  = jiffies + 1;
 		add_timer(&avbdevice.txTimer);
 	}
-
 	avbcard->tx.lastTimerTs = jiffies;
+#endif
 }
 
 static int avb_capture_open(struct snd_pcm_substream *substream)
