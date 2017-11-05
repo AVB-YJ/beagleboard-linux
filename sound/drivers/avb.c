@@ -136,6 +136,43 @@ static struct snd_pcm_hardware avb_capture_hw = {
         .periods_max =      4,
 };
 
+static u32 avb_change_to_big_endian(u32 val)
+{
+	u32 test  = 0x12345678;
+	u8* msb   = (u8*)&test;
+	u32 bval  = val;
+	u8* bytes = (u8*)&bval;
+	u8 tmp    = 0;
+
+	if(*msb != 0x12) {
+		tmp = bytes[0];
+		bytes[0] = bytes[3];
+		bytes[3] = tmp; 
+		tmp = bytes[1];
+		bytes[1] = bytes[2];
+		bytes[2] = tmp; 
+	}
+
+	return bval;
+}
+
+static u16 avb_change_to_big_endian_u16(u16 val)
+{
+	u16 test  = 0x1234;
+	u8* msb   = (u8*)&test;
+	u16 bval  = val;
+	u8* bytes = (u8*)&bval;
+	u8 tmp    = 0;
+
+	if(*msb != 0x12) {
+		tmp = bytes[0];
+		bytes[0] = bytes[1];
+		bytes[1] = tmp;
+	}
+
+	return bval;
+}
+
 static void avb_log(int level, char* fmt, ...)
 {
 	va_list args;
@@ -174,6 +211,26 @@ static void avb_log(int level, char* fmt, ...)
 	}
 
 	va_end(args);
+}
+
+static struct workdata* avb_init_and_queue_work(int workId, void* wdata, int delay)
+{
+	struct workdata* wd;
+
+	wd = (struct workdata*)kmalloc(sizeof(struct workdata), GFP_KERNEL);
+
+	if(wd == NULL) {
+		avb_log(AVB_KERN_ERR, KERN_ERR "avb_init_and_queue_work workdata allocation failed for work %d", workId);
+		return NULL;
+	}
+
+	wd->dw.data = wdata;
+	wd->delayedWorkId = workId;
+	INIT_DELAYED_WORK((struct delayed_work*)wd, avbWqFn);
+			
+	queue_delayed_work(avbdevice.wq, (struct delayed_work*)wd, delay);
+
+	return wd;
 }
 
 static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
@@ -251,8 +308,8 @@ static bool avb_socket_init(struct socketdata* sd, int rxTimeout)
 	sd->rxMsgHdr.msg_namelen=sizeof(struct sockaddr_ll);
 	sd->rxMsgHdr.msg_iocb = NULL;
 	sd->rxiov.iov_base = sd->rxBuf;
-	sd->rxiov.iov_len = AVB_MSRP_ETH_FRAME_SIZE;
-	iov_iter_init(&sd->rxMsgHdr.msg_iter, READ | ITER_KVEC, &sd->rxiov, 1, AVB_MSRP_ETH_FRAME_SIZE);
+	sd->rxiov.iov_len = AVB_MAX_ETH_FRAME_SIZE;
+	iov_iter_init(&sd->rxMsgHdr.msg_iter, READ | ITER_KVEC, &sd->rxiov, 1, AVB_MAX_ETH_FRAME_SIZE);
 
 	return true;
 }
@@ -323,7 +380,7 @@ static void avb_avtp_aaf_header_init(char* buf, struct snd_pcm_substream *substr
 
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avtp_aaf_header_init");
 
-	memset(buf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	memset(buf, 0, AVB_MAX_ETH_FRAME_SIZE);
 
 	eh->h_dest[0] = avbcard->sd.destmac[0];
 	eh->h_dest[1] = avbcard->sd.destmac[1];
@@ -668,19 +725,10 @@ static int avb_capture_hw_params(struct snd_pcm_substream *substream, struct snd
 
 	avb_log(AVB_KERN_NOT, KERN_NOTICE "avb_capture_hw_params buffersize:%lu framesize:%lu", avbcard->rx.buffersize, avbcard->rx.framesize);
 
-	avbdevice.avtpwd = (struct workdata*)kmalloc(sizeof(struct workdata), GFP_KERNEL);
-	if(avbdevice.avtpwd == NULL) {
-		avb_log(AVB_KERN_ERR, KERN_ERR "avb_capture_hw_params avtp workdata allocation failed");
-		return -1;
-	}
-
 	memset(&avbdevice.rxts[0], 0, (sizeof(int) * AVB_MAX_TS_SLOTS));
 	avbdevice.rxIdx = 0;
-	avbdevice.avtpwd->dw.card = avbcard;
-	avbdevice.avtpwd->delayedWorkId = AVB_DELAY_WORK_AVTP;
-	INIT_DELAYED_WORK((struct delayed_work*)avbdevice.avtpwd, avbWqFn);
 
-	queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avtpwd, 1);
+	avbdevice.avtpwd = avb_init_and_queue_work(AVB_DELAY_WORK_AVTP, (void*)avbcard, 1);
 
 	avbcard->rx.tmpbuf = kmalloc(avbcard->rx.buffersize, GFP_KERNEL);
 
@@ -777,14 +825,14 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 	snd_pcm_uframes_t hwIdx = 0;
 	struct avtPduAafPcmHdr* hdr = (struct avtPduAafPcmHdr*)&avbcard->sd.rxBuf[sizeof(struct ethhdr)];
 
-	memset(avbcard->sd.rxBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	memset(avbcard->sd.rxBuf, 0, AVB_MAX_ETH_FRAME_SIZE);
 	avbcard->sd.rxiov.iov_base = avbcard->sd.rxBuf;
-	avbcard->sd.rxiov.iov_len = AVB_MSRP_ETH_FRAME_SIZE;
-	iov_iter_init(&avbcard->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &avbcard->sd.rxiov, 1, AVB_MSRP_ETH_FRAME_SIZE);
+	avbcard->sd.rxiov.iov_len = AVB_MAX_ETH_FRAME_SIZE;
+	iov_iter_init(&avbcard->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &avbcard->sd.rxiov, 1, AVB_MAX_ETH_FRAME_SIZE);
 
 	oldfs = get_fs();
 	set_fs(KERNEL_DS);
-	err = sock_recvmsg(avbcard->sd.sock, &avbcard->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0);
+	err = sock_recvmsg(avbcard->sd.sock, &avbcard->sd.rxMsgHdr, AVB_MAX_ETH_FRAME_SIZE, 0);
 	set_fs(oldfs);
 
 	if (err > 0) {
@@ -852,6 +900,321 @@ static int avb_avtp_listen(struct avbcard* avbcard)
 	return rxFrames;
 }
 
+static bool avb_avdecc_init(struct avdecc* avdecc)
+{
+	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_init");
+
+	avdecc->sd.type = ETH_P_TSN;
+	avdecc->sd.destmac[0] = 0x91;
+	avdecc->sd.destmac[1] = 0xe0;
+	avdecc->sd.destmac[2] = 0xf0;
+	avdecc->sd.destmac[3] = 0x01;
+	avdecc->sd.destmac[4] = 0x00;
+	avdecc->sd.destmac[5] = 0x00;
+
+	return avb_socket_init(&avdecc->sd, 1000);
+}
+
+static void avb_acdecc_initAndFillEthHdr(struct avdecc* avdecc, u8 multicast)
+{
+	struct ethhdr *eh = (struct ethhdr *)&avdecc->sd.txBuf[0];
+	struct ethhdr *reh = (struct ethhdr *)&avdecc->sd.rxBuf[0];
+
+	/* Initialize it */
+	memset(avdecc->sd.txBuf, 0, AVB_MAX_ETH_FRAME_SIZE);
+
+	/* Fill in the Ethernet header */
+	if(multicast == 0) {
+		eh->h_dest[0] = reh->h_source[0];
+		eh->h_dest[1] = reh->h_source[1];
+		eh->h_dest[2] = reh->h_source[2];
+		eh->h_dest[3] = reh->h_source[3];
+		eh->h_dest[4] = reh->h_source[4];
+		eh->h_dest[5] = reh->h_source[5];
+	} else {
+		eh->h_dest[0] = 0x91;
+		eh->h_dest[1] = 0xe0;
+		eh->h_dest[2] = 0xf0;
+		eh->h_dest[3] = 0x01;
+		eh->h_dest[4] = 0x00;
+		eh->h_dest[5] = 0x00;
+	}
+	eh->h_source[0] = avdecc->sd.srcmac[0];
+	eh->h_source[1] = avdecc->sd.srcmac[1];
+	eh->h_source[2] = avdecc->sd.srcmac[2];
+	eh->h_source[3] = avdecc->sd.srcmac[3];
+	eh->h_source[4] = avdecc->sd.srcmac[4];
+	eh->h_source[5] = avdecc->sd.srcmac[5];
+
+	/* Fill in Ethertype field */
+	eh->h_proto = htons(avdecc->sd.type);
+}
+
+static void avb_acdecc_fillAVTPCtrlHdr(struct avdecc* avdecc, u8 subType, u8 msgType, u8 status, u16 dataLen)
+{
+	struct avtPduControlHdr *hdr = (struct avtPduControlHdr*)&avdecc->sd.txBuf[sizeof(struct ethhdr)];
+
+	hdr->h.f.subType = subType;
+	AVB_AVTPDU_CTRL_HDR_SET_SV(hdr, 0);
+	AVB_AVTPDU_CTRL_HDR_SET_VER(hdr, 0);
+	AVB_AVTPDU_CTRL_HDR_SET_MSGTYPE(hdr, msgType);
+	AVB_AVTPDU_CTRL_HDR_SET_VALIDTIME(hdr, status);
+	AVB_AVTPDU_CTRL_HDR_SET_DATALEN(hdr, dataLen);
+	hdr->h.f.streamId[0] = avdecc->sd.srcmac[0];
+	hdr->h.f.streamId[1] = avdecc->sd.srcmac[1];
+	hdr->h.f.streamId[2] = avdecc->sd.srcmac[2];
+	hdr->h.f.streamId[3] = 0xff;
+	hdr->h.f.streamId[4] = 0xfe;
+	hdr->h.f.streamId[5] = avdecc->sd.srcmac[3];
+	hdr->h.f.streamId[6] = avdecc->sd.srcmac[4];
+	hdr->h.f.streamId[7] = avdecc->sd.srcmac[5];
+}
+
+static void avb_adp_advertise(struct avdecc* avdecc)
+{
+	int txSize = 0;
+	int err = 0;
+	
+	struct adpdu* adpdu = (struct adpdu*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
+
+	avb_log(AVB_KERN_INFO, KERN_INFO "avb_adp_advertise");
+
+	avb_acdecc_initAndFillEthHdr(avdecc, 1);
+	avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ADP, AVB_ADP_MSGTYPE_ENTITY_AVAILABLE, 31, AVB_ADP_CONTROL_DATA_LENGTH);
+
+	adpdu->entityModelId[0] = avdecc->sd.srcmac[0];
+	adpdu->entityModelId[1] = avdecc->sd.srcmac[1];
+	adpdu->entityModelId[2] = avdecc->sd.srcmac[2];
+	adpdu->entityModelId[3] = avdecc->sd.srcmac[3];
+	adpdu->entityModelId[4] = avdecc->sd.srcmac[4];
+	adpdu->entityModelId[5] = avdecc->sd.srcmac[5];
+	adpdu->entityModelId[6] = 0x00;
+	adpdu->entityModelId[7] = 0x01;
+	adpdu->entityCaps = avb_change_to_big_endian(0x00008708);
+	adpdu->talkerStreamSources = avb_change_to_big_endian_u16(1);
+	adpdu->talkerCaps = avb_change_to_big_endian_u16(0x4001);
+	adpdu->listenerStreamSinks = avb_change_to_big_endian_u16(1);
+	adpdu->listenerCaps = avb_change_to_big_endian_u16(0x4001);
+	adpdu->controlCaps = 0;
+	adpdu->avaiIdx = avb_change_to_big_endian(avdecc->adpAvaiIdx++);
+	adpdu->gptpGrandMasterId[0] = avdecc->sd.srcmac[0];
+	adpdu->gptpGrandMasterId[1] = avdecc->sd.srcmac[1];
+	adpdu->gptpGrandMasterId[2] = avdecc->sd.srcmac[2];
+	adpdu->gptpGrandMasterId[3] = 0xFF;
+	adpdu->gptpGrandMasterId[4] = 0xFE;
+	adpdu->gptpGrandMasterId[5] = avdecc->sd.srcmac[3];
+	adpdu->gptpGrandMasterId[6] = avdecc->sd.srcmac[4];
+	adpdu->gptpGrandMasterId[7] = avdecc->sd.srcmac[5];
+	adpdu->gptpDomainNumber = 0;
+	adpdu->idenCtrlIdx = 0;
+	adpdu->interfaceIdx = 0;
+
+	txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + AVB_ADP_CONTROL_DATA_LENGTH;
+
+	avdecc->sd.txiov.iov_base = avdecc->sd.txBuf;
+	avdecc->sd.txiov.iov_len = txSize;
+	iov_iter_init(&avdecc->sd.txMsgHdr.msg_iter, WRITE | ITER_KVEC, &avdecc->sd.txiov, 1, txSize);
+
+	if ((err = sock_sendmsg(avdecc->sd.sock, &avdecc->sd.txMsgHdr)) <= 0) {
+		avb_log(AVB_KERN_WARN, KERN_WARNING "avb_adp_advertise Socket transmission fails %d \n", err);
+		return;
+	}
+}
+
+static int avb_avdecc_listen(struct avdecc* avdecc)
+{
+	int err = 0;
+	mm_segment_t oldfs;
+
+	memset(avdecc->sd.rxBuf, 0, AVB_MAX_ETH_FRAME_SIZE);
+	avdecc->sd.rxiov.iov_base = avdecc->sd.rxBuf;
+	avdecc->sd.rxiov.iov_len = AVB_MAX_ETH_FRAME_SIZE;
+	iov_iter_init(&avdecc->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &avdecc->sd.rxiov, 1, AVB_MAX_ETH_FRAME_SIZE);
+
+	oldfs = get_fs();
+	set_fs(KERNEL_DS);
+	err = sock_recvmsg(avdecc->sd.sock, &avdecc->sd.rxMsgHdr, AVB_MAX_ETH_FRAME_SIZE, 0);
+	set_fs(oldfs);
+	
+	if (err <= 0)
+		if(err != -11)
+			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_adecc_listen Socket reception res %d \n", err);
+	
+	return err;
+}
+
+static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
+{
+	int err = 0;
+	u16 txSize = 0;
+	struct aemCmd* cmd = (struct aemCmd*)&avdecc->sd.rxBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
+
+	struct readDescpCmd* rdCmd = (struct readDescpCmd*)cmd;
+	struct readDescpRes* rdRes = (struct readDescpRes*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
+
+	avb_acdecc_initAndFillEthHdr(avdecc, 0);
+	
+	memcpy(&rdRes->hdr.ctrlEntityId[0], &rdCmd->hdr.ctrlEntityId[0], 8);
+	rdRes->hdr.seqId = rdCmd->hdr.seqId;
+	rdRes->hdr.cmdType = cmd->cmdType;
+
+	switch(avb_change_to_big_endian_u16(cmd->cmdType)) {
+		case AVB_AEM_CMD_READ_DESCP: {
+			
+			rdRes->cfgIdx = rdCmd->cfgIdx;
+			rdRes->res = 0;
+			
+			switch(avb_change_to_big_endian_u16(rdCmd->descType)) {
+				case AVB_AEM_DESCP_ENTITY: {
+					struct entityDescp* entDescp = (struct entityDescp*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes)];
+					
+					avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Entity Descriptor");
+
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct entityDescp)));
+					entDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_ENTITY);
+					entDescp->descIdx  = 0;
+					entDescp->entityId[0] = avdecc->sd.srcmac[0];
+					entDescp->entityId[1] = avdecc->sd.srcmac[1];
+					entDescp->entityId[2] = avdecc->sd.srcmac[2];
+					entDescp->entityId[3] = 0xff;
+					entDescp->entityId[4] = 0xfe;
+					entDescp->entityId[5] = avdecc->sd.srcmac[3];
+					entDescp->entityId[6] = avdecc->sd.srcmac[4];
+					entDescp->entityId[7] = avdecc->sd.srcmac[5];
+					entDescp->entityModelId[0] = avdecc->sd.srcmac[0];
+					entDescp->entityModelId[1] = avdecc->sd.srcmac[1];
+					entDescp->entityModelId[2] = avdecc->sd.srcmac[2];
+					entDescp->entityModelId[3] = avdecc->sd.srcmac[3];
+					entDescp->entityModelId[4] = avdecc->sd.srcmac[4];
+					entDescp->entityModelId[5] = avdecc->sd.srcmac[5];
+					entDescp->entityModelId[6] = 0x00;
+					entDescp->entityModelId[7] = 0x01;
+					entDescp->entityCaps = avb_change_to_big_endian(0x00008708);
+					entDescp->talkerStreamSources = avb_change_to_big_endian_u16(1);
+					entDescp->talkerCaps = avb_change_to_big_endian_u16(0x4001);
+					entDescp->listenerStreamSinks = avb_change_to_big_endian_u16(1);
+					entDescp->listenerCaps = avb_change_to_big_endian_u16(0x4001);
+					entDescp->controlCaps = 0;
+					entDescp->avaiIdx = avb_change_to_big_endian(avdecc->adpAvaiIdx);
+					strcpy(&entDescp->entityName[0], "ALSA_AVB_Driver");
+					strcpy(&entDescp->firmwareVer[0], "0.1");
+					strcpy(&entDescp->groupName[0], "0");
+					strcpy(&entDescp->serialNumber[0], "0");
+					entDescp->vendorNameString = avb_change_to_big_endian_u16(0x0007);
+					entDescp->modelNameString = avb_change_to_big_endian_u16(0x0007);
+					entDescp->cfgCount = avb_change_to_big_endian_u16(1);
+					entDescp->currCfg = avb_change_to_big_endian_u16(0);
+
+					if((rdCmd->cfgIdx > 0) || (rdCmd->descIdx > 0)) {
+						struct readDescpCmd* rdResCmd = (struct readDescpCmd*)rdRes;
+						rdResCmd->descType = rdCmd->descType;
+						rdResCmd->descIdx  = rdCmd->descIdx;
+						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpCmd);
+						avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct readDescpCmd)));
+					} else {
+						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes) + sizeof(struct entityDescp);
+					}
+					break;
+				} case AVB_AEM_DESCP_CONFIGURATION: {
+					struct configDescp* cfgDescp = (struct configDescp*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes)];
+					
+					avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Configuration Descriptor");
+
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct entityDescp)));
+					cfgDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_CONFIGURATION);
+					cfgDescp->descIdx  = 0;
+					strcpy(&cfgDescp->objName[0], "default");
+					cfgDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					cfgDescp->descpCount = avb_change_to_big_endian_u16(AVB_AEM_MAX_DESCP_COUNT);
+					cfgDescp->descpOff = avb_change_to_big_endian_u16(74);
+
+					cfgDescp->descps[0].descType = avb_change_to_big_endian_u16(6);
+					cfgDescp->descps[0].descCount = avb_change_to_big_endian_u16(1);
+
+					if((rdCmd->cfgIdx > 0) || (rdCmd->descIdx > 0)) {
+						struct readDescpCmd* rdResCmd = (struct readDescpCmd*)rdRes;
+						rdResCmd->descType = rdCmd->descType;
+						rdResCmd->descIdx  = rdCmd->descIdx;
+						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpCmd);
+						avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct readDescpCmd)));
+					} else {
+						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes) + sizeof(struct configDescp);
+					}
+					break;
+				} default: {
+					struct readDescpCmd* rdResCmd = (struct readDescpCmd*)rdRes;
+					rdResCmd->descType = rdCmd->descType;
+					rdResCmd->descIdx  = rdCmd->descIdx;
+					txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpCmd);
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NOT_IMPLEMENTED, (sizeof(struct readDescpCmd)));
+					avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_aecp_respondToAEMCmd unknown descType: %d", avb_change_to_big_endian_u16(rdCmd->descType));
+					break;
+				}
+			}
+			break;
+		}  case AVB_AEM_CMD_ENTITY_AVAILABLE: {
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Entiry Available");
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct aemCmd);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct aemCmd)));
+			break;				
+		} case AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION: {
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Register Unsolicited Responses");
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct aemCmd);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct aemCmd)));
+			break;
+		} default: {
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NOT_IMPLEMENTED, (sizeof(struct readDescpRes)));
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_aecp_respondToAEMCmd unknown cmdType: %d", avb_change_to_big_endian_u16(cmd->cmdType));
+			break;
+		}
+	}
+
+	if(txSize > 0) {
+		avdecc->sd.txiov.iov_base = avdecc->sd.txBuf;
+		avdecc->sd.txiov.iov_len = txSize;
+		iov_iter_init(&avdecc->sd.txMsgHdr.msg_iter, WRITE | ITER_KVEC, &avdecc->sd.txiov, 1, txSize);
+
+		if ((err = sock_sendmsg(avdecc->sd.sock, &avdecc->sd.txMsgHdr)) <= 0) {
+			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_avdecc_aecp_respondToAEMCmd Socket transmission fails %d \n", err);
+			return;
+		}	
+	}
+}
+
+static void avb_avdecc_aecp_respondToCmd(struct avdecc* avdecc)
+{
+	struct avtPduControlHdr *hdr = (struct avtPduControlHdr*)&avdecc->sd.rxBuf[sizeof(struct ethhdr)];
+
+	switch(hdr->h.f.b1.msgType) {
+		case AVB_AECP_MSGTYPE_AEM_COMMAND:
+			avb_avdecc_aecp_respondToAEMCmd(avdecc);
+			break;
+		
+		default:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_aecp_respondToCmd unknown subType: %d", hdr->h.f.b1.msgType);
+			break;
+	}
+}
+
+static void avb_avdecc_listen_and_respond(struct avdecc* avdecc)
+{
+	struct avtPduControlHdr *hdr = (struct avtPduControlHdr*)&avdecc->sd.rxBuf[sizeof(struct ethhdr)];
+
+	if(avb_avdecc_listen(avdecc) > 0) {
+
+		switch(hdr->h.f.subType) {
+			case AVB_AVTP_SUBTYPE_AECP:
+				avb_avdecc_aecp_respondToCmd(avdecc);
+				break;
+
+			default:
+				avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_listen_and_respond unknown subType: %d", hdr->h.f.subType);
+				break;
+		}
+	}
+}
+
 static bool avb_msrp_init(struct msrp* msrp)
 {
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_msrp_init");
@@ -880,7 +1243,7 @@ static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join)
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_msrp_talkerdeclarations");
 
 	/* Initialize it */
-	memset(msrp->sd.txBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	memset(msrp->sd.txBuf, 0, AVB_MAX_ETH_FRAME_SIZE);
 
 	/* Fill in the Ethernet header */
 	eh->h_dest[0] = 0x01;
@@ -955,7 +1318,7 @@ static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int stat
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_msrp_listenerdeclarations");
 
 	/* Initialize it */
-	memset(msrp->sd.txBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	memset(msrp->sd.txBuf, 0, AVB_MAX_ETH_FRAME_SIZE);
 
 	/* Fill in the Ethernet header */
 	eh->h_dest[0] = 0x01;
@@ -1048,14 +1411,14 @@ static void avb_msrp_listen(struct msrp* msrp)
 	mm_segment_t oldfs;
 	struct listnermsrpdu *tpdu = (struct listnermsrpdu*)&msrp->sd.rxBuf[sizeof(struct ethhdr)];
 
-	memset(msrp->sd.rxBuf, 0, AVB_MSRP_ETH_FRAME_SIZE);
+	memset(msrp->sd.rxBuf, 0, AVB_MAX_ETH_FRAME_SIZE);
 	msrp->sd.rxiov.iov_base = msrp->sd.rxBuf;
-	msrp->sd.rxiov.iov_len = AVB_MSRP_ETH_FRAME_SIZE;
-	iov_iter_init(&msrp->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &msrp->sd.rxiov, 1, AVB_MSRP_ETH_FRAME_SIZE);
+	msrp->sd.rxiov.iov_len = AVB_MAX_ETH_FRAME_SIZE;
+	iov_iter_init(&msrp->sd.rxMsgHdr.msg_iter, READ | ITER_KVEC, &msrp->sd.rxiov, 1, AVB_MAX_ETH_FRAME_SIZE);
 
 	oldfs = get_fs();
 	set_fs(KERNEL_DS);
-	err = sock_recvmsg(msrp->sd.sock, &msrp->sd.rxMsgHdr, AVB_MSRP_ETH_FRAME_SIZE, 0);
+	err = sock_recvmsg(msrp->sd.sock, &msrp->sd.rxMsgHdr, AVB_MAX_ETH_FRAME_SIZE, 0);
 	set_fs(oldfs);
 	
 
@@ -1087,19 +1450,15 @@ static void avb_msrp_listen(struct msrp* msrp)
 
 static void avbWqFn(struct work_struct *work)
 {
-	bool initDone = true;
 	int fillsize = 0;
 	int rxFrames = -1;
 	int rxLoopCount = 0;
 	struct workdata* wd = (struct workdata*)work;
 
 	if(wd->delayedWorkId == AVB_DELAY_WORK_MSRP) {
-		avb_log(AVB_KERN_INFO, KERN_INFO "avbWqFn: MSRP @ %lu", jiffies);
 
-		if(wd->dw.msrp->initialized == false) {
-			initDone = false;
+		if(wd->dw.msrp->initialized == false)
 			wd->dw.msrp->initialized = avb_msrp_init(wd->dw.msrp);
-		}
 
 		if(wd->dw.msrp->initialized == false) {
 			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 10000);
@@ -1113,6 +1472,21 @@ static void avbWqFn(struct work_struct *work)
 			   (wd->dw.msrp->rxState != MSRP_DECLARATION_STATE_READY)) {
 				queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 2000);
 			}
+		}
+	} else if(wd->delayedWorkId == AVB_DELAY_WORK_AVDECC) {
+
+		if(wd->dw.avdecc->initialized == false)
+			wd->dw.avdecc->initialized = avb_avdecc_init(wd->dw.avdecc);
+
+		if(wd->dw.avdecc->initialized == false) {
+			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avdeccwd, 10000);
+		} else {
+			if(((jiffies - wd->dw.avdecc->lastADPAdvJiffy) >= 2000) || (wd->dw.avdecc->lastADPAdvJiffy == 0)) {		
+				avb_adp_advertise(wd->dw.avdecc);
+				wd->dw.avdecc->lastADPAdvJiffy = jiffies;
+			}
+			avb_avdecc_listen_and_respond(wd->dw.avdecc);
+			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.avdeccwd, 1);
 		}
 	} else if(wd->delayedWorkId == AVB_DELAY_WORK_AVTP) {
 
@@ -1358,17 +1732,8 @@ static int __init alsa_avb_init(void)
 			return -1;
 		}
 
-		avbdevice.msrpwd = (struct workdata*)kmalloc(sizeof(struct workdata), GFP_KERNEL);
-		if(avbdevice.msrpwd == NULL) {
-			avb_log(AVB_KERN_ERR, KERN_ERR "alsa_avb_init msrp workdata allocation failed");
-			return -1;
-		}
-
-		avbdevice.msrpwd->dw.msrp = &avbdevice.msrp;
-		avbdevice.msrpwd->delayedWorkId = AVB_DELAY_WORK_MSRP;
-		INIT_DELAYED_WORK((struct delayed_work*)avbdevice.msrpwd, avbWqFn);
-				
-		queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 100);
+		/* avbdevice.msrpwd = avb_init_and_queue_work(AVB_DELAY_WORK_MSRP, (void*)&avbdevice.msrp, 100); */
+		avbdevice.avdeccwd = avb_init_and_queue_work(AVB_DELAY_WORK_AVDECC, (void*)&avbdevice.avdecc, 100);
 
 		avb_log(AVB_KERN_NOT, KERN_NOTICE "alsa_avb_init done err: %d, numcards: %d", err, numcards);	
 	}
@@ -1383,6 +1748,13 @@ static void __exit alsa_avb_exit(void)
 	if(avbdevice.msrpwd != NULL) {
 		cancel_delayed_work((struct delayed_work*)avbdevice.msrpwd);
 		kfree(avbdevice.msrpwd);
+		avbdevice.msrpwd = NULL;
+	}
+
+	if(avbdevice.avdeccwd != NULL) {
+		cancel_delayed_work((struct delayed_work*)avbdevice.avdeccwd);
+		kfree(avbdevice.avdeccwd);
+		avbdevice.avdeccwd = NULL;
 	}
 
 	if(avbdevice.wq != NULL) {

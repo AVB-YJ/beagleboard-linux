@@ -28,10 +28,12 @@
 
 #define AVB_DELAY_WORK_MSRP                             (0)
 #define AVB_DELAY_WORK_AVTP                             (1)
+#define AVB_DELAY_WORK_AVDECC                           (2)
 
 #define AVB_MAX_TS_SLOTS                                (12)
 #define AVB_AVTP_AAF_SAMPLES_PER_PACKET		        (192)    /* 4ms * 48KHz i.e. Maxframes per jiffy for HZ=250 */
 #define AVB_MSRP_ETH_FRAME_SIZE                         (2048)
+#define AVB_MAX_ETH_FRAME_SIZE                          (AVB_MSRP_ETH_FRAME_SIZE)
 
 #define MSRP_ATTRIBUTE_TYPE_TALKER_ADVERTISE_VECTOR	(1)
 #define MSRP_ATTRIBUTE_TYPE_TALKER_FAILED_VECTOR	(2)
@@ -66,8 +68,12 @@
 #define AVTP_PDU_COMMON_STREAM_HEADER_LENGTH            (24)
 #define AVTP_PDU_COMMON_CONTROL_HEADER_LENGTH           (12)
 
-#define AVB_AVTP_SUBTYPE_AAF			(2)
 #define AVB_AVTP_AAF_VERSION			(0)
+
+#define AVB_AVTP_SUBTYPE_AAF			(2)
+#define AVB_AVTP_SUBTYPE_ADP			(0xFA)
+#define AVB_AVTP_SUBTYPE_AECP			(0xFB)
+#define AVB_AVTP_SUBTYPE_ACMP			(0xFC)
 
 #define AVB_AVTP_AAF_FORMAT_USER_SP		(0)
 #define AVB_AVTP_AAF_FORMAT_32_BIT_FLOAT	(1)
@@ -88,6 +94,34 @@
 #define AVB_AVTP_AAF_NSR_192_KHZ		(0x9)
 #define AVB_AVTP_AAF_NSR_24_KHZ			(0xA)
 
+#define AVB_ADP_MSGTYPE_ENTITY_AVAILABLE	(0x0)
+#define AVB_ADP_MSGTYPE_ENTITY_DEPARTING	(0x1)
+#define AVB_ADP_MSGTYPE_ENTITY_DISCOVER		(0x2)
+
+#define AVB_ADP_CONTROL_DATA_LENGTH             (56)
+
+#define AVB_AECP_MSGTYPE_AEM_COMMAND            (0x00)
+#define AVB_AECP_MSGTYPE_AEM_RESPONSE           (0x01)
+
+#define AVB_AEM_CMD_ENTITY_ACQUIRE              (0x00)
+#define AVB_AEM_CMD_ENTITY_LOCK                 (0x01)
+#define AVB_AEM_CMD_ENTITY_AVAILABLE            (0x02)
+#define AVB_AEM_CMD_CTRL_AVAILABLE              (0x03)
+#define AVB_AEM_CMD_READ_DESCP	                (0x04)
+#define AVB_AEM_CMD_WRITE_DESCP                 (0x05)
+#define AVB_AEM_CMD_SET_CONFIG                  (0x06)
+#define AVB_AEM_CMD_GET_CONFIG                  (0x07)
+#define AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION	(0x24)
+
+#define AVB_AEM_DESCP_ENTITY			(0x00) 
+#define AVB_AEM_DESCP_CONFIGURATION             (0x01) 
+
+#define AVB_AEM_RES_SUCCESS                     (0x00) 
+#define AVB_AEM_RES_NOT_IMPLEMENTED             (0x01)
+#define AVB_AEM_RES_NO_SUCH_DESCRIPTOR          (0x02)    
+
+#define AVB_AEM_MAX_DESCP_COUNT                 (1)  
+
 #define AVB_AVTP_AAF_HDR_GET_SV(hdr)		((hdr->h.f.b1.sv & 0x80) >> 7)
 #define AVB_AVTP_AAF_HDR_SET_SV(hdr, val)	(hdr->h.f.b1.sv = (hdr->h.f.b1.sv | ((val << 7) & 0x80)))
 #define AVB_AVTP_AAF_HDR_GET_VER(hdr)		((hd->h.f.b1.version & 0x70) >> 4)
@@ -106,6 +140,17 @@
 #define AVB_AVTP_AAF_HDR_SET_SP(hdr, val)	(hdr->h.f.fsd2.sp = (hdr->h.f.fsd2.sp | ((val << 4) & 0x10)))
 #define AVB_AVTP_AAF_HDR_GET_EVT(hdr)		(hd->h.f.fsd2.evt & 0x0F)
 #define AVB_AVTP_AAF_HDR_SET_EVT(hdr, val)	(hdr->h.f.fsd2.evt = (hdr->h.f.fsd2.evt | (val & 0x0F)))
+
+#define AVB_AVTPDU_CTRL_HDR_GET_SV(hdr)			((hdr->h.f.b1.sv & 0x80) >> 7)
+#define AVB_AVTPDU_CTRL_HDR_SET_SV(hdr, val)		(hdr->h.f.b1.sv = (hdr->h.f.b1.sv | ((val << 7) & 0x80)))
+#define AVB_AVTPDU_CTRL_HDR_GET_VER(hdr)		((hd->h.f.b1.version & 0x70) >> 4)
+#define AVB_AVTPDU_CTRL_HDR_SET_VER(hdr, val)		(hdr->h.f.b1.version = (hdr->h.f.b1.version | ((val << 4) & 0x70)))
+#define AVB_AVTPDU_CTRL_HDR_GET_MSGTYPE(hdr)		((hd->h.f.b1.msgType & 0x0f))
+#define AVB_AVTPDU_CTRL_HDR_SET_MSGTYPE(hdr, val)	(hdr->h.f.b1.msgType = (hdr->h.f.b1.msgType | ((val) & 0x0f)))
+#define AVB_AVTPDU_CTRL_HDR_GET_VALIDTIME(hdr)		((hd->h.f.b2.validTime & 0xf8) >> 3)
+#define AVB_AVTPDU_CTRL_HDR_SET_VALIDTIME(hdr, val)	(hdr->h.f.b2.validTime = (hdr->h.f.b2.validTime | ((val << 3) & 0xf8)))
+#define AVB_AVTPDU_CTRL_HDR_GET_DATALEN(hdr)		((((hdr->h.f.b2.dataLen & 0x0007) << 8) & 0xff00) | (hdr->h.f.dataLen & 0x00ff))
+#define AVB_AVTPDU_CTRL_HDR_SET_DATALEN(hdr, val)	((hdr->h.f.b2.dataLen = (hdr->h.f.b2.dataLen | ((val >> 8) & 0x0007))), (hdr->h.f.dataLen = (val & 0x00ff)))
 
 typedef signed long long int s64;
 typedef signed int s32;
@@ -154,6 +199,102 @@ struct avtPduAafPcmHdr {
 		} f;
 		u8 bytes[AVTP_PDU_COMMON_STREAM_HEADER_LENGTH];
 	} h;
+};
+
+struct avtPduControlHdr {
+	union tch {
+		struct tcf {
+			u8 subType;
+			union tcb1 {
+				u8 sv;		/* 1 bit stream valid indication */
+				u8 version;	/* 3 bits version */
+				u8 msgType;	/* 4 bit ControlData/MessageType */
+			} b1;
+			union tcb2 {
+				u8 validTime;	/* 5 bit Status/ValidTime */
+				u8 dataLen;	/* First 3 bits of control data length */	
+			} b2;
+			u8 dataLen;             /* Last 8 bits of control data length */
+			u8 streamId[8];    	/* Stream or entity id */
+		} f;
+		u8 bytes[AVTP_PDU_COMMON_CONTROL_HEADER_LENGTH];
+	} h;
+};
+
+struct aemCmd {
+	u8 ctrlEntityId[8];
+	u16 seqId;
+	u16 cmdType;
+};
+
+struct readDescpCmd {
+	struct aemCmd hdr;
+	u16 cfgIdx;
+	u16 res;
+	u16 descType;
+	u16 descIdx;
+};
+
+struct readDescpRes {
+	struct aemCmd hdr;
+	u16 cfgIdx;
+	u16 res;
+};
+
+struct entityDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 entityId[8];
+	u8 entityModelId[8];
+	u32 entityCaps;
+	u16 talkerStreamSources;
+	u16 talkerCaps;
+	u16 listenerStreamSinks;
+	u16 listenerCaps;
+	u32 controlCaps;
+	u32 avaiIdx;
+	u8 associationId[8];
+	u8 entityName[64];
+	u16 vendorNameString;
+	u16 modelNameString;
+	u8 firmwareVer[64];
+	u8 groupName[64];
+	u8 serialNumber[64];
+	u16 cfgCount;
+	u16 currCfg;
+};
+
+struct configDescpCount {
+	u16 descType;
+	u16 descCount;
+};
+
+struct configDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 descpCount;
+	u16 descpOff;
+	struct configDescpCount descps[AVB_AEM_MAX_DESCP_COUNT];
+};
+
+struct adpdu {
+	u8 entityModelId[8];
+	u32 entityCaps;
+	u16 talkerStreamSources;
+	u16 talkerCaps;
+	u16 listenerStreamSinks;
+	u16 listenerCaps;
+	u32 controlCaps;
+	u32 avaiIdx;
+	u8 gptpGrandMasterId[8];
+	u8 gptpDomainNumber;
+	u8 res1[3];
+	u16 idenCtrlIdx;
+	u16 interfaceIdx;
+	u8 associationId[8];
+	u32 res2;
 };
 
 struct listenermsrpfirstvalue {
@@ -238,8 +379,15 @@ struct socketdata {
 	struct sockaddr_ll txSockAddress;
 	struct msghdr rxMsgHdr;
 	struct sockaddr_ll rxSockAddress;
-	char txBuf[AVB_MSRP_ETH_FRAME_SIZE];
-	char rxBuf[AVB_MSRP_ETH_FRAME_SIZE];
+	char txBuf[AVB_MAX_ETH_FRAME_SIZE];
+	char rxBuf[AVB_MAX_ETH_FRAME_SIZE];
+};
+
+struct avdecc {
+	bool initialized;
+	u32 adpAvaiIdx;
+	u64 lastADPAdvJiffy;
+	struct socketdata sd;
 };
 
 struct msrp {
@@ -285,8 +433,10 @@ struct workdata {
 	struct delayed_work work;
 	int delayedWorkId;
 	union delayed_work_data {
+		void* data;
 		struct msrp* msrp;
 		struct avbcard* card;
+		struct avdecc* avdecc;
 	} dw;
 };
 
@@ -303,6 +453,7 @@ struct avbdevice {
 	int txIdx;
 	int rxIdx;
 	struct msrp msrp;
+	struct avdecc avdecc;
 	struct avbcard card;
 	struct snd_hwdep *hwdep;
 #ifdef AVB_USE_HIGH_RES_TIMER
@@ -310,6 +461,7 @@ struct avbdevice {
 #else
 	struct timer_list txTimer;
 #endif	
+	struct workdata* avdeccwd;
 	struct workdata* msrpwd;
 	struct workdata* avtpwd;
 	struct workqueue_struct* wq;
