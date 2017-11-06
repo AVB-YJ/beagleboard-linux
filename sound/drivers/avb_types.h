@@ -114,13 +114,18 @@
 #define AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION	(0x24)
 
 #define AVB_AEM_DESCP_ENTITY			(0x00) 
-#define AVB_AEM_DESCP_CONFIGURATION             (0x01) 
+#define AVB_AEM_DESCP_CONFIGURATION             (0x01)
+#define AVB_AEM_DESCP_STREAM_IP                 (0x05) 
+#define AVB_AEM_DESCP_STREAM_OP                 (0x06) 
 
 #define AVB_AEM_RES_SUCCESS                     (0x00) 
 #define AVB_AEM_RES_NOT_IMPLEMENTED             (0x01)
 #define AVB_AEM_RES_NO_SUCH_DESCRIPTOR          (0x02)    
 
 #define AVB_AEM_MAX_DESCP_COUNT                 (1)  
+
+#define AVB_AEM_STREAM_FORMAT_AVTP              (0x02)
+#define AVB_AEM_MAX_SUPP_FORMATS                (1)
 
 #define AVB_AVTP_AAF_HDR_GET_SV(hdr)		((hdr->h.f.b1.sv & 0x80) >> 7)
 #define AVB_AVTP_AAF_HDR_SET_SV(hdr, val)	(hdr->h.f.b1.sv = (hdr->h.f.b1.sv | ((val << 7) & 0x80)))
@@ -277,6 +282,55 @@ struct configDescp {
 	u16 descpCount;
 	u16 descpOff;
 	struct configDescpCount descps[AVB_AEM_MAX_DESCP_COUNT];
+};
+
+struct avtpStreamFormat {
+	u8 subType;
+	union sfb1 {
+		u8 res1;        /* 4 bit reserved */
+		u8 nsr;	        /* 4 bit Nominal sample rate */
+	} b1;
+	u8 format;
+	u8 bitDepth;
+	u8 cpf;                 /* First 8 bits of channels per frame */
+	union sfb5 {
+		u8 cpf;	        /* Last 2 bits of channels per frame */
+		u8 spf;	        /* First 6 bits of samples per frame */	
+	} b5;
+	union sfb6 {
+		u8 spf;	        /* Last 4 bits of samples per frame */
+		u8 res2;	/* First 4 bits of reserved */	
+	} b6;
+	u8 res2;    		/* Last 8 bits of reserved */
+};
+
+struct streamFormat {
+	union fmt {
+		struct avtpStreamFormat avtp;
+	} fmt;
+};
+
+struct streamDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 clockDomainIdx;
+	u16 streamFlags;
+	struct streamFormat currFmt;
+	u16 fmtsOff;
+	u16 fmtsCount;
+	u8 bkpTalker1EntityId[8];
+	u16 bkpTalker1UniqueId;
+	u8 bkpTalker2EntityId[8];
+	u16 bkpTalker2UniqueId;
+	u8 bkpTalker3EntityId[8];
+	u16 bkpTalker3UniqueId;
+	u8 bkdUpTalkerEntityId[8];
+	u16 bkdUpTalkerUniqueId;
+	u16 avbIfIdx;
+	u32 bufSize;
+	struct streamFormat suppFmts[AVB_AEM_MAX_SUPP_FORMATS];
 };
 
 struct adpdu {

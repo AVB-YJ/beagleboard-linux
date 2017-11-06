@@ -1120,7 +1120,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					
 					avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Configuration Descriptor");
 
-					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct entityDescp)));
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct configDescp)));
 					cfgDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_CONFIGURATION);
 					cfgDescp->descIdx  = 0;
 					strcpy(&cfgDescp->objName[0], "default");
@@ -1139,6 +1139,46 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 						avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct readDescpCmd)));
 					} else {
 						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes) + sizeof(struct configDescp);
+					}
+					break;
+				} case AVB_AEM_DESCP_STREAM_OP: {
+					struct streamDescp* strmOpDescp = (struct streamDescp*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes)];
+					
+					avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Stream Out Descriptor");
+
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct streamDescp)));
+					strmOpDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_OP);
+					strmOpDescp->descIdx  = 0;
+					strcpy(&strmOpDescp->objName[0], "default");
+					strmOpDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					strmOpDescp->clockDomainIdx = 0;
+					strmOpDescp->streamFlags = avb_change_to_big_endian_u16(0x0006);
+					strmOpDescp->avbIfIdx = 0;
+					strmOpDescp->bufSize = avb_change_to_big_endian(100000);
+					strmOpDescp->fmtsCount = avb_change_to_big_endian_u16(AVB_AEM_MAX_SUPP_FORMATS);
+					strmOpDescp->fmtsOff = avb_change_to_big_endian_u16(132);
+
+					strmOpDescp->suppFmts[0].fmt.avtp.subType  = AVB_AEM_STREAM_FORMAT_AVTP;
+					strmOpDescp->suppFmts[0].fmt.avtp.b1.nsr   = 5;
+					strmOpDescp->suppFmts[0].fmt.avtp.format   = 4;
+					strmOpDescp->suppFmts[0].fmt.avtp.bitDepth = 16;
+					strmOpDescp->suppFmts[0].fmt.avtp.cpf      = 2;
+					strmOpDescp->suppFmts[0].fmt.avtp.b5.cpf   = 0;
+					strmOpDescp->suppFmts[0].fmt.avtp.b5.spf   = strmOpDescp->suppFmts[0].fmt.avtp.b5.spf | 0x01;
+					strmOpDescp->suppFmts[0].fmt.avtp.b6.spf   = 0;
+					strmOpDescp->suppFmts[0].fmt.avtp.b6.res2  = 0;
+					strmOpDescp->suppFmts[0].fmt.avtp.res2     = 0;
+
+					memcpy(&strmOpDescp->currFmt, &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+
+					if((rdCmd->cfgIdx > 0) || (rdCmd->descIdx > 0)) {
+						struct readDescpCmd* rdResCmd = (struct readDescpCmd*)rdRes;
+						rdResCmd->descType = rdCmd->descType;
+						rdResCmd->descIdx  = rdCmd->descIdx;
+						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpCmd);
+						avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct readDescpCmd)));
+					} else {
+						txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes) + sizeof(struct streamDescp);
 					}
 					break;
 				} default: {
