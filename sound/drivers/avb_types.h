@@ -111,6 +111,8 @@
 #define AVB_AEM_CMD_WRITE_DESCP                 (0x05)
 #define AVB_AEM_CMD_SET_CONFIG                  (0x06)
 #define AVB_AEM_CMD_GET_CONFIG                  (0x07)
+#define AVB_AEM_CMD_SET_STREAM_INFO             (0x0e)
+#define AVB_AEM_CMD_GET_STREAM_INFO             (0x0f)
 #define AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION	(0x24)
 
 #define AVB_AEM_DESCP_ENTITY			(0x00) 
@@ -331,6 +333,28 @@ struct streamDescp {
 	u16 avbIfIdx;
 	u32 bufSize;
 	struct streamFormat suppFmts[AVB_AEM_MAX_SUPP_FORMATS];
+};
+
+struct getStreamInfoCmd {
+	struct aemCmd hdr;
+	u16 descType;
+	u16 descIdx;
+};
+
+struct streamInfo {
+	struct aemCmd hdr;
+	u16 descType;
+	u16 descIdx;
+	u32 flags;
+	struct streamFormat currFmt;
+	u8 streamId[8];
+	u32 msrpAccuLat;
+	u8 streamDestMAC[6];
+	u8 msrpFailureCode;
+	u8 res1;
+	u8 msrpFailureBridgeId[8];
+	u16 streamVlanId;
+	u16 res2;
 };
 
 struct adpdu {

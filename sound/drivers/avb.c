@@ -1050,6 +1050,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 	struct aemCmd* cmd = (struct aemCmd*)&avdecc->sd.rxBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
 
 	struct readDescpCmd* rdCmd = (struct readDescpCmd*)cmd;
+	struct getStreamInfoCmd* gtStrInfoCmd = (struct getStreamInfoCmd*)cmd;
 	struct readDescpRes* rdRes = (struct readDescpRes*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
 
 	avb_acdecc_initAndFillEthHdr(avdecc, 0);
@@ -1196,7 +1197,44 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Entiry Available");
 			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct aemCmd);
 			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct aemCmd)));
-			break;				
+			break;
+		} case AVB_AEM_CMD_GET_STREAM_INFO: {
+			struct streamInfo* streamInfo = (struct streamInfo*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
+					
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Get Stream Info command");
+
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, sizeof(struct streamInfo));
+			streamInfo->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_OP);
+			streamInfo->descIdx  = 0;
+			streamInfo->flags = avb_change_to_big_endian(0xd0000001);
+			streamInfo->currFmt.fmt.avtp.subType  = AVB_AEM_STREAM_FORMAT_AVTP;
+			streamInfo->currFmt.fmt.avtp.b1.nsr   = 5;
+			streamInfo->currFmt.fmt.avtp.format   = 4;
+			streamInfo->currFmt.fmt.avtp.bitDepth = 16;
+			streamInfo->currFmt.fmt.avtp.cpf      = 2;
+			streamInfo->currFmt.fmt.avtp.b5.cpf   = 0;
+			streamInfo->currFmt.fmt.avtp.b5.spf   = streamInfo->currFmt.fmt.avtp.b5.spf | 0x01;
+			streamInfo->currFmt.fmt.avtp.b6.spf   = 0;
+			streamInfo->currFmt.fmt.avtp.b6.res2  = 0;
+			streamInfo->currFmt.fmt.avtp.res2     = 0;
+			streamInfo->streamId[7] = 1;
+			streamInfo->msrpAccuLat = avb_change_to_big_endian(0);
+			streamInfo->streamDestMAC[0] = 0x01;
+			streamInfo->streamDestMAC[1] = 0x80;
+			streamInfo->streamDestMAC[2] = 0xC2;
+			streamInfo->streamDestMAC[3] = 0x00;
+			streamInfo->streamDestMAC[4] = 0x00;
+			streamInfo->streamDestMAC[5] = 0x0E;
+			streamInfo->msrpFailureCode = 0;
+			streamInfo->streamVlanId = avb_change_to_big_endian_u16(0);
+
+			if(gtStrInfoCmd->descIdx > 0) {
+				txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct getStreamInfoCmd);
+				avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct getStreamInfoCmd)));
+			} else {
+				txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct streamInfo);
+			}
+			break;			
 		} case AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION: {
 			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Register Unsolicited Responses");
 			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct aemCmd);
