@@ -61,9 +61,14 @@
 #define MSRP_DECLARATION_STATE_ASKING_FAILED            (1)
 #define MSRP_DECLARATION_STATE_READY                    (2)
 #define MSRP_DECLARATION_STATE_READY_FAILED             (3)
+#define MSRP_DECLARATION_STATE_UNKNOWN                  (255)
 
 #define MSRP_THREE_PACK(a, b, c) (u8)((((a * 6) + b) * 6) + c)
+#define MSRP_THREE_PACK_GET_A(x) (u8)(x/36)
+#define MSRP_THREE_PACK_GET_B(x) (u8)((x/6) % 6)
+#define MSRP_THREE_PACK_GET_C(x) (u8)(x%6)
 #define MSRP_FOUR_PACK(a, b, c, d) (u8)((a * 64) + (b * 16) + (c * 4) + (d))
+#define MSRP_FOUR_PACK_GET_A(x) (u8)(x/64)
 
 #define AVTP_PDU_COMMON_STREAM_HEADER_LENGTH            (24)
 #define AVTP_PDU_COMMON_CONTROL_HEADER_LENGTH           (12)
@@ -74,6 +79,7 @@
 #define AVB_AVTP_SUBTYPE_ADP			(0xFA)
 #define AVB_AVTP_SUBTYPE_AECP			(0xFB)
 #define AVB_AVTP_SUBTYPE_ACMP			(0xFC)
+#define AVB_AVTP_SUBTYPE_MAAP                   (0xFE)
 
 #define AVB_AVTP_AAF_FORMAT_USER_SP		(0)
 #define AVB_AVTP_AAF_FORMAT_32_BIT_FLOAT	(1)
@@ -114,20 +120,69 @@
 #define AVB_AEM_CMD_SET_STREAM_INFO             (0x0e)
 #define AVB_AEM_CMD_GET_STREAM_INFO             (0x0f)
 #define AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION	(0x24)
+#define AVB_AEM_CMD_GET_COUNTERS                (0x029)
 
 #define AVB_AEM_DESCP_ENTITY			(0x00) 
 #define AVB_AEM_DESCP_CONFIGURATION             (0x01)
+#define AVB_AEM_DESCP_AUDIO_UNIT                (0x02)
 #define AVB_AEM_DESCP_STREAM_IP                 (0x05) 
-#define AVB_AEM_DESCP_STREAM_OP                 (0x06) 
+#define AVB_AEM_DESCP_STREAM_OP                 (0x06)
+#define AVB_AEM_DESCP_JACK_IP                   (0x07)
+#define AVB_AEM_DESCP_JACK_OP                   (0x08)
+#define AVB_AEM_DESCP_AVBINTERFACE              (0x09)
+#define AVB_AEM_DESCP_LOCALE                    (0x0c)
+#define AVB_AEM_DESCP_STRINGS                   (0x0d)
+#define AVB_AEM_DESCP_STREAM_PORT_IP            (0x0e)
+#define AVB_AEM_DESCP_STREAM_PORT_OP            (0x0f)
+#define AVB_AEM_DESCP_EXT_PORT_IP               (0x10)
+#define AVB_AEM_DESCP_EXT_PORT_OP               (0x11) 
+#define AVB_AEM_DESCP_AUDIO_CLUSTER             (0x14)
+#define AVB_AEM_DESCP_AUDIO_MAP                 (0x17)
+#define AVB_AEM_DESCP_INVALID                   (0xffff)  
 
 #define AVB_AEM_RES_SUCCESS                     (0x00) 
 #define AVB_AEM_RES_NOT_IMPLEMENTED             (0x01)
 #define AVB_AEM_RES_NO_SUCH_DESCRIPTOR          (0x02)    
 
-#define AVB_AEM_MAX_DESCP_COUNT                 (1)  
+#define AVB_AEM_MAX_DESCP_COUNT                 (4)  
 
 #define AVB_AEM_STREAM_FORMAT_AVTP              (0x02)
 #define AVB_AEM_MAX_SUPP_FORMATS                (1)
+
+#define AVB_ACMP_MSGTYPE_CONNECT_TX_CMD         (0x00)
+#define AVB_ACMP_MSGTYPE_CONNECT_TX_RESP        (0x01)
+#define AVB_ACMP_MSGTYPE_DISCONNECT_TX_CMD      (0x02)
+#define AVB_ACMP_MSGTYPE_DISCONNECT_TX_RESP     (0x03)
+#define AVB_ACMP_MSGTYPE_GET_TX_STATE_CMD       (0x04)
+#define AVB_ACMP_MSGTYPE_GET_TX_STATE_RESP      (0x05)
+#define AVB_ACMP_MSGTYPE_CONNECT_RX_CMD         (0x06)
+#define AVB_ACMP_MSGTYPE_CONNECT_RX_RESP        (0x07)
+#define AVB_ACMP_MSGTYPE_DISCONNECT_RX_CMD      (0x08)
+#define AVB_ACMP_MSGTYPE_DISCONNECT_RX_RESP     (0x09)
+#define AVB_ACMP_MSGTYPE_GET_RX_STATE_CMD       (0x0A)
+#define AVB_ACMP_MSGTYPE_GET_RX_STATE_RESP      (0x0B)
+#define AVB_ACMP_MSGTYPE_GET_TX_CONN_CMD        (0x0C)
+#define AVB_ACMP_MSGTYPE_GET_TX_CONN_RESP       (0x0D)
+
+#define AVB_ACMP_STATUS_SUCCESS                   (0x00)
+#define AVB_ACMP_STATUS_LISTENER_UNKNOWN_ID       (0x01)
+#define AVB_ACMP_STATUS_TALKER_UNKNOWN_ID         (0x02)
+#define AVB_ACMP_STATUS_TALKER_DEST_MAC_FAIL      (0x03)
+#define AVB_ACMP_STATUS_TALKER_NO_STREAM_IDX      (0x04)
+#define AVB_ACMP_STATUS_TALKER_NO_BANDWIDTH       (0x05)
+#define AVB_ACMP_STATUS_TALKER_EXCLUSIVE          (0x06)
+#define AVB_ACMP_STATUS_LISTENER_TALKER_TIMEOUT   (0x07)
+#define AVB_ACMP_STATUS_LISTENER_EXCLUSIVE        (0x08)
+#define AVB_ACMP_STATUS_STATE_UNAVAILABLE         (0x09)
+#define AVB_ACMP_STATUS_NOT_CONNECTED             (0x0a)
+#define AVB_ACMP_STATUS_NO_SUCH_CONNECTION        (0x0b)
+#define AVB_ACMP_STATUS_COULD_NOT_SEND_MESSAGE    (0x0c)
+#define AVB_ACMP_STATUS_TALKER_MISBEHAVING        (0x0d)
+#define AVB_ACMP_STATUS_LISTENER_MISBEHAVING      (0x0e)
+#define AVB_ACMP_STATUS_RFU                       (0x0f)
+#define AVB_ACMP_STATUS_CONTROLLER_NOT_AUTHORIZED (0x10)
+#define AVB_ACMP_STATUS_INCOMPATIBLE_REQUEST      (0x11)
+#define AVB_ACMP_STATUS_NOT_SUPPORTED             (0x1f)
 
 #define AVB_AVTP_AAF_HDR_GET_SV(hdr)		((hdr->h.f.b1.sv & 0x80) >> 7)
 #define AVB_AVTP_AAF_HDR_SET_SV(hdr, val)	(hdr->h.f.b1.sv = (hdr->h.f.b1.sv | ((val << 7) & 0x80)))
@@ -228,10 +283,57 @@ struct avtPduControlHdr {
 	} h;
 };
 
+
+struct maapPdu {
+	union mtch {
+		struct mtcf {
+			u8 subType;
+			union mtcb1 {
+				u8 sv;		/* 1 bit stream valid indication */
+				u8 version;	/* 3 bits version */
+				u8 msgType;	/* 4 bit ControlData/MessageType */
+			} b1;
+			union mtcb2 {
+				u8 maapVersion;	/* 5 bit Status/ValidTime */
+				u8 dataLen;	/* First 3 bits of control data length */	
+			} b2;
+			u8 dataLen;             /* Last 8 bits of control data length */
+			u8 streamId[8];    	/* Stream or entity id */
+		} f;
+		u8 bytes[AVTP_PDU_COMMON_CONTROL_HEADER_LENGTH];
+	} h;
+	u8 reqMAC[6];
+	u16 reqCount;
+	u8 conflictMAC[6];
+	u16 conflictCount;
+};
+
+struct acmPdu {
+	u8 ctrlEntityId[8];
+	u8 talkerEntityId[8];
+	u8 listenerEntityId[8];
+	u16 talkerUniqueId;
+	u16 listenerUniqueId;
+	u8 streamDestMAC[6];
+	u16 connectionCount;
+	u16 sequenceId;
+	u16 flags;
+	u16 streamVlanId;
+	u16 res;
+};
+
 struct aemCmd {
 	u8 ctrlEntityId[8];
 	u16 seqId;
 	u16 cmdType;
+};
+
+struct acquireEntCmd {
+	struct aemCmd hdr;
+	u32 flags;
+	u8 ownerId[8];
+	u16 descType;
+	u16 descIdx;
 };
 
 struct readDescpCmd {
@@ -286,6 +388,151 @@ struct configDescp {
 	struct configDescpCount descps[AVB_AEM_MAX_DESCP_COUNT];
 };
 
+struct audioUnitDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 clockDomainIdx;
+	u16 numStreamIp;
+	u16 baseStreamIp;
+	u16 numStreamOp;
+	u16 baseStreamOp;
+	u16 numExtIp;
+	u16 baseExtIp;
+	u16 numExtOp;
+	u16 baseExtOp;
+	u16 numIntIp;
+	u16 baseIntIp;
+	u16 numIntOp;
+	u16 baseIntOp;
+	u16 numControls;
+	u16 baseControl;
+	u16 numSignalSelector;
+	u16 baseSignalSelector;
+	u16 numMixers;
+	u16 baseMixer;
+	u16 numMatrices;
+	u16 baseMatrix;
+	u16 numSplitters;
+	u16 baseSplitter;
+	u16 numCombiners;
+	u16 baseCombiner;
+	u16 numdeMultiplexer;
+	u16 basedeMultiplexer;
+	u16 numMultiplxer;
+	u16 baseMultiplexer;
+	u16 numTranscoders;
+	u16 baseTranscoder;
+	u16 numControlBlocks;
+	u16 baseControlBlock;
+	u32 currentSamplingRate;
+	u16 samplingRatesOffset;
+	u16 samplingRatesCount;
+	u32 samplingRates[10];
+};
+
+struct streamPortDescp {
+	u16 descType;
+	u16 descIdx;
+	u16 clockDomainIdx;
+	u16 portFlags;
+	u16 numControls;
+	u16 baseControl;
+	u16 numClusters;
+	u16 baseCluster;
+	u16 numMaps;
+	u16 baseMap;
+};
+
+struct extPortDescp {
+	u16 descType;
+	u16 descIdx;
+	u16 clockDomainIdx;
+	u16 portFlags;
+	u16 numControls;
+	u16 baseControl;
+	u16 signalType;
+	u16 signalIdx;
+	u16 signalOp;
+	u32 blockLatency;
+	u16 jackIdx;
+};
+
+struct jackDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 jackFlags;
+	u16 jackType;
+	u16 numControls;
+	u16 baseControl;
+};
+
+struct audioClusterDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 signalType;
+	u16 signalIdx;
+	u16 signalOp;
+	u32 pathLatency;
+	u32 blockLatency;
+	u16 numChannels;
+	u8 format;
+};
+
+struct audMapFmt {
+	u16 streamIdx;
+	u16 streamChannel;
+	u16 clusterOffset;
+	u16 clusterChannel;
+};
+
+struct audioMapDescp {
+	u16 descType;
+	u16 descIdx;
+	u16 mappingOffset;
+	u16 numMappings;
+	struct audMapFmt map[8];
+};
+
+struct avbIfDescp {
+	u16 descType;
+	u16 descIdx;
+	u8  ifName[64];
+	u16 localizedDescp;
+	u8  macAddr[6];
+	u16 ifFlags;
+	u8 clockIden[8];
+	u8 prio1;
+	u8 clockClass;
+	u16 offScaledLogVar;
+	u8 clockAccu;
+	u8 prio2;
+	u8 domainNo;
+	u8 logSyncInt;
+	u8 logAnnoInt;
+	u8 logPDelayInt;
+	u16 portNo;
+};
+
+struct localeDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 localeId[64];
+	u16 numStrings;
+	u16 baseStringsIdx;
+};
+
+struct stringsDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 strings[7][64];
+};
+
 struct avtpStreamFormat {
 	u8 subType;
 	union sfb1 {
@@ -306,9 +553,35 @@ struct avtpStreamFormat {
 	u8 res2;    		/* Last 8 bits of reserved */
 };
 
+struct iecStreamFormat {
+	u8 subType;
+	union isfb1 {
+		u8 sf;          /* 1 bit stream format */
+		u8 fmt;         /* 6 bit fomrat */
+		u8 r;           /* 1 bit reserved */
+	} b1;
+	union isfb2 {
+		u8 fdf_evt;     /* 5 bits */
+		u8 fdf_sfc;	/* 3 bits */
+	} b2;
+	u8 dbs;
+	union isfb4 {
+		u8 b;		/* 1 bit */
+		u8 nb;		/* 1 bit */
+		u8 res;		/* 6 bits */
+	} b4;
+	u8 label_iec_60958_cnt;
+	u8 label_mbla_cnt;
+	union isfb7 {
+		u8 label_midi_cnt;	/* 4 bits */
+		u8 label_smptecnt;	/* 4 bits */
+	} b7;
+};
+
 struct streamFormat {
 	union fmt {
 		struct avtpStreamFormat avtp;
+		struct iecStreamFormat iec;
 	} fmt;
 };
 
@@ -333,6 +606,20 @@ struct streamDescp {
 	u16 avbIfIdx;
 	u32 bufSize;
 	struct streamFormat suppFmts[AVB_AEM_MAX_SUPP_FORMATS];
+};
+
+struct getCountersCmd {
+	struct aemCmd hdr;
+	u16 descType;
+	u16 descIdx;
+};
+
+struct countersDescp {
+	struct aemCmd hdr;
+	u16 descType;
+	u16 descIdx;
+	u32 countersValid;
+	u32 counters[32];
 };
 
 struct getStreamInfoCmd {
@@ -375,6 +662,12 @@ struct adpdu {
 	u32 res2;
 };
 
+struct domainmsrpfirstvalue {
+	u8 srClassId;
+	u8 srClassPrio;
+	u16 srClassVID;
+};
+
 struct listenermsrpfirstvalue {
 	u8 streamid[8];
 };
@@ -403,6 +696,12 @@ struct vectorheader {
 	u16 numberofvalues;
 };
 
+struct domainvectorattribute {
+	struct vectorheader hdr;
+	struct domainmsrpfirstvalue val;
+	u8 vector[2];
+};
+
 struct listnervectorattribute {
 	struct vectorheader hdr;
 	struct listenermsrpfirstvalue val;
@@ -413,6 +712,14 @@ struct talkervectorattribute {
 	struct vectorheader hdr;
 	struct talkermsrpfirstvalue val;
 	u8 vector[1];
+};
+
+struct domainmrpmsg {
+	u8 attributetype;
+	u8 attributelen;
+	u16 attributelistlen;
+	struct domainvectorattribute attibutelist;
+	u16 endmarker;
 };
 
 struct listnermrpmsg {
@@ -428,6 +735,12 @@ struct talkermrpmsg {
 	u8 attributelen;
 	u16 attributelistlen;
 	struct talkervectorattribute attibutelist;
+	u16 endmarker;
+};
+
+struct domainmsrpdu {
+	u8 protocolversion;
+	struct domainmrpmsg msg;
 	u16 endmarker;
 };
 
@@ -583,11 +896,12 @@ static int avb_capture_copy(struct snd_pcm_substream *substream,
 static int avb_avtp_listen(struct avbcard* card);
 
 static bool avb_msrp_init(struct msrp* msrp);
-static int avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp);
-static int avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp);
-static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join);
+static void avb_msrp_evaluateTalkerAdvertisement(struct msrp* msrp);
+static void avb_msrp_evaluateListnerAdvertisement(struct msrp* msrp);
+static void avb_msrp_domaindeclarations(struct msrp* msrp);
+static void avb_msrp_talkerdeclarations(struct msrp* msrp, bool join, int state);
 static void avb_msrp_listenerdeclarations(struct msrp* msrp, bool join, int state);
-static void avb_msrp_listen(struct msrp* msrp);
+static int avb_msrp_listen(struct msrp* msrp);
 
 static void avbWqFn(struct work_struct *work);
 
