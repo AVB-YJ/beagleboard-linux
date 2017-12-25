@@ -912,6 +912,9 @@ static bool avb_avdecc_init(struct avdecc* avdecc)
 	avdecc->sd.destmac[4] = 0x00;
 	avdecc->sd.destmac[5] = 0x00;
 
+	avdecc->acmpTxState = AVB_ACMP_STATUS_NOT_CONNECTED;
+	avdecc->acmpRxState = AVB_ACMP_STATUS_NOT_CONNECTED;
+
 	return avb_socket_init(&avdecc->sd, 1000);
 }
 
@@ -969,7 +972,7 @@ static void avb_acdecc_fillAVTPCtrlHdr(struct avdecc* avdecc, u8 subType, u8 msg
 		hdr->h.f.streamId[5] = avdecc->sd.srcmac[5]; //avdecc->sd.srcmac[3];
 		hdr->h.f.streamId[6] = 0; //avdecc->sd.srcmac[4];
 		hdr->h.f.streamId[7] = 1; //avdecc->sd.srcmac[5];
-	} else {
+	} else if (streamId > 0) {
 		hdr->h.f.streamId[0] = avdecc->sd.srcmac[0];
 		hdr->h.f.streamId[1] = avdecc->sd.srcmac[1];
 		hdr->h.f.streamId[2] = avdecc->sd.srcmac[2];
@@ -978,6 +981,15 @@ static void avb_acdecc_fillAVTPCtrlHdr(struct avdecc* avdecc, u8 subType, u8 msg
 		hdr->h.f.streamId[5] = avdecc->sd.srcmac[3];
 		hdr->h.f.streamId[6] = avdecc->sd.srcmac[4];
 		hdr->h.f.streamId[7] = avdecc->sd.srcmac[5];
+	} else {
+		hdr->h.f.streamId[0] = 0;
+		hdr->h.f.streamId[1] = 0;
+		hdr->h.f.streamId[2] = 0;
+		hdr->h.f.streamId[3] = 0;
+		hdr->h.f.streamId[4] = 0;
+		hdr->h.f.streamId[5] = 0;
+		hdr->h.f.streamId[6] = 0;
+		hdr->h.f.streamId[7] = 0;
 	}
 }
 
@@ -991,7 +1003,7 @@ static void avb_maap_announce(struct avdecc* avdecc)
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_maap_announce");
 
 	avb_acdecc_initAndFillEthHdr(avdecc, 1);
-	avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_MAAP, 3, 31, 16, 1);
+	avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_MAAP, 3, 1, 16, -1);
 
 	pdu->reqMAC[0] = 0x91;
 	pdu->reqMAC[1] = 0xe0;
@@ -1018,8 +1030,6 @@ static void avb_adp_discover(struct avdecc* avdecc)
 {
 	int txSize = 0;
 	int err = 0;
-	
-	struct adpdu* adpdu = (struct adpdu*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
 
 	avb_log(AVB_KERN_INFO, KERN_INFO "avb_adp_discover");
 
@@ -1058,7 +1068,7 @@ static void avb_adp_advertise(struct avdecc* avdecc)
 	adpdu->entityModelId[5] = avdecc->sd.srcmac[5];
 	adpdu->entityModelId[6] = 0x00;
 	adpdu->entityModelId[7] = 0x01;
-	adpdu->entityCaps = avb_change_to_big_endian(0x00008708);
+	adpdu->entityCaps = avb_change_to_big_endian(0x00008508);
 	adpdu->talkerStreamSources = avb_change_to_big_endian_u16(1);
 	adpdu->talkerCaps = avb_change_to_big_endian_u16(0x4001);
 	adpdu->listenerStreamSinks = avb_change_to_big_endian_u16(1);
@@ -1162,7 +1172,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					entDescp->entityModelId[5] = avdecc->sd.srcmac[5];
 					entDescp->entityModelId[6] = 0x00;
 					entDescp->entityModelId[7] = 0x01;
-					entDescp->entityCaps = avb_change_to_big_endian(0x00008708);
+					entDescp->entityCaps = avb_change_to_big_endian(0x00008508);
 					entDescp->talkerStreamSources = avb_change_to_big_endian_u16(1);
 					entDescp->talkerCaps = avb_change_to_big_endian_u16(0x4001);
 					entDescp->listenerStreamSinks = avb_change_to_big_endian_u16(1);
@@ -1177,14 +1187,6 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					entDescp->modelNameString = avb_change_to_big_endian_u16(0x0001);
 					entDescp->cfgCount = avb_change_to_big_endian_u16(1);
 					entDescp->currCfg = avb_change_to_big_endian_u16(0);
-					entDescp->associationId[0] = 0xff;
-					entDescp->associationId[1] = 0xff;
-					entDescp->associationId[2] = 0xff;
-					entDescp->associationId[3] = 0xff;
-					entDescp->associationId[4] = 0xff;
-					entDescp->associationId[5] = 0xff;
-					entDescp->associationId[6] = 0xff;
-					entDescp->associationId[7] = 0xff;
 					descpSize = sizeof(struct entityDescp);
 					break;
 				} case AVB_AEM_DESCP_CONFIGURATION: {
@@ -1195,19 +1197,24 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct configDescp)), 1);
 					cfgDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_CONFIGURATION);
 					cfgDescp->descIdx  = 0;
-					strcpy(&cfgDescp->objName[0], "default");
-					cfgDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					cfgDescp->localizedDescp = avb_change_to_big_endian_u16(0xffff);
 					cfgDescp->descpCount = avb_change_to_big_endian_u16(AVB_AEM_MAX_DESCP_COUNT);
 					cfgDescp->descpOff = avb_change_to_big_endian_u16(74);
 
 					cfgDescp->descps[0].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_AUDIO_UNIT);
 					cfgDescp->descps[0].descCount = avb_change_to_big_endian_u16(1);
-					cfgDescp->descps[1].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_OP);
+					cfgDescp->descps[1].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_IP);
 					cfgDescp->descps[1].descCount = avb_change_to_big_endian_u16(1);
-					cfgDescp->descps[2].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_IP);
+					cfgDescp->descps[2].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_OP);
 					cfgDescp->descps[2].descCount = avb_change_to_big_endian_u16(1);
-					cfgDescp->descps[3].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_LOCALE);
+					cfgDescp->descps[3].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_AVBINTERFACE);
 					cfgDescp->descps[3].descCount = avb_change_to_big_endian_u16(1);
+					cfgDescp->descps[4].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_CLOCKSOURCE);
+					cfgDescp->descps[4].descCount = avb_change_to_big_endian_u16(2);
+					cfgDescp->descps[5].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_LOCALE);
+					cfgDescp->descps[5].descCount = avb_change_to_big_endian_u16(1);
+					cfgDescp->descps[6].descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_CLOCK_DOMAIN);
+					cfgDescp->descps[6].descCount = avb_change_to_big_endian_u16(1);
 					descpSize = sizeof(struct configDescp);
 					break;
 				} case AVB_AEM_DESCP_AUDIO_UNIT: {
@@ -1218,8 +1225,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct audioUnitDescp)), 1);
 					auDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_AUDIO_UNIT);
 					auDescp->descIdx  = 0;
-					strcpy(&auDescp->objName[0], "default");
-					auDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					auDescp->localizedDescp = avb_change_to_big_endian_u16(0x0001);
 
 					auDescp->numStreamIp = avb_change_to_big_endian_u16(1);
 					auDescp->numStreamOp = avb_change_to_big_endian_u16(1);
@@ -1227,17 +1233,13 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					auDescp->numExtOp = avb_change_to_big_endian_u16(8);
 					auDescp->currentSamplingRate = avb_change_to_big_endian(48000);
 					auDescp->samplingRatesOffset = avb_change_to_big_endian_u16(144);
-					auDescp->samplingRatesCount = avb_change_to_big_endian_u16(10);
-					auDescp->samplingRates[0] = avb_change_to_big_endian(8000);
-					auDescp->samplingRates[1] = avb_change_to_big_endian(16000);
-					auDescp->samplingRates[2] = avb_change_to_big_endian(32000);
-					auDescp->samplingRates[3] = avb_change_to_big_endian(48000);
-					auDescp->samplingRates[4] = avb_change_to_big_endian(64000);
-					auDescp->samplingRates[5] = avb_change_to_big_endian(96000);
-					auDescp->samplingRates[6] = avb_change_to_big_endian(11025);
-					auDescp->samplingRates[7] = avb_change_to_big_endian(22050);
-					auDescp->samplingRates[8] = avb_change_to_big_endian(44100);
-					auDescp->samplingRates[9] = avb_change_to_big_endian(88200);
+					auDescp->samplingRatesCount = avb_change_to_big_endian_u16(6);
+					auDescp->samplingRates[0] = avb_change_to_big_endian(44100);
+					auDescp->samplingRates[1] = avb_change_to_big_endian(48000);
+					auDescp->samplingRates[2] = avb_change_to_big_endian(88200);
+					auDescp->samplingRates[3] = avb_change_to_big_endian(96000);
+					auDescp->samplingRates[4] = avb_change_to_big_endian(176400);
+					auDescp->samplingRates[5] = avb_change_to_big_endian(192000);
 					descpSize = sizeof(struct audioUnitDescp);
 					break;
 				} case AVB_AEM_DESCP_STREAM_PORT_IP:
@@ -1255,6 +1257,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 
 					stPortDescp->numClusters = avb_change_to_big_endian_u16(8);
 					stPortDescp->numMaps = avb_change_to_big_endian_u16(1);
+					stPortDescp->portFlags = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descType) == AVB_AEM_DESCP_STREAM_PORT_IP)?(0):(1)));
 					stPortDescp->baseCluster = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descType) == AVB_AEM_DESCP_STREAM_PORT_IP)?(0):(8)));
 					stPortDescp->baseMap = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descType) == AVB_AEM_DESCP_STREAM_PORT_IP)?(0):(1)));
 					descpSize = sizeof(struct streamPortDescp);
@@ -1273,7 +1276,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					extPortDescp->descIdx  = rdCmd->descIdx;
 
 					extPortDescp->signalType = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descType) == AVB_AEM_DESCP_EXT_PORT_IP)?(AVB_AEM_DESCP_INVALID):(AVB_AEM_DESCP_AUDIO_CLUSTER)));
-					extPortDescp->jackIdx = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descType) == AVB_AEM_DESCP_EXT_PORT_IP)?(0):(8)) + avb_change_to_big_endian_u16(rdCmd->descIdx));
+					extPortDescp->signalIdx = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descType) == AVB_AEM_DESCP_EXT_PORT_IP)?(0):(avb_change_to_big_endian_u16(rdCmd->descIdx))));
 					descpSize = sizeof(struct extPortDescp); maxDescIdx = 7;
 					break;
 				} case AVB_AEM_DESCP_JACK_IP:
@@ -1306,15 +1309,11 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct audioClusterDescp)), 1);
 					auClDescp->descType = rdCmd->descType;
 					auClDescp->descIdx  = rdCmd->descIdx;
-					if(avb_change_to_big_endian_u16(rdCmd->descIdx) < 8)
-					  strcpy(&auClDescp->objName[0], "Cluster-ip-");
-					else
-					  strcpy(&auClDescp->objName[0], "Cluster-op-");
-					auClDescp->objName[10] = 48 + avb_change_to_big_endian_u16(rdCmd->descIdx);
-					auClDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+
+					auClDescp->localizedDescp = avb_change_to_big_endian_u16(0xffff);
 
 					auClDescp->signalType = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descIdx) < 8)?(AVB_AEM_DESCP_INVALID):(AVB_AEM_DESCP_EXT_PORT_IP)));
-					auClDescp->signalIdx = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descIdx) < 8)?(0):(avb_change_to_big_endian_u16(rdCmd->descIdx))));
+					auClDescp->signalIdx = avb_change_to_big_endian_u16(((avb_change_to_big_endian_u16(rdCmd->descIdx) < 8)?(0):(avb_change_to_big_endian_u16(rdCmd->descIdx) - 8)));
 					auClDescp->numChannels = avb_change_to_big_endian_u16(1);
 					auClDescp->format = 0x40;
 					descpSize = sizeof(struct audioClusterDescp); maxDescIdx = 15;
@@ -1333,10 +1332,64 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					for(i = 0; i < 8; i++) {
 					  auMapDescp->map[i].streamIdx = avb_change_to_big_endian_u16(0);
 					  auMapDescp->map[i].streamChannel = avb_change_to_big_endian_u16(i);
-					  auMapDescp->map[i].clusterOffset = avb_change_to_big_endian_u16(i + (avb_change_to_big_endian_u16(rdCmd->descIdx) * 8));
+					  auMapDescp->map[i].clusterOffset = avb_change_to_big_endian_u16(i);
 					  auMapDescp->map[i].clusterChannel = avb_change_to_big_endian_u16(0);
 					}
 					descpSize = sizeof(struct audioMapDescp); maxDescIdx = 1;
+					break;
+				} case AVB_AEM_DESCP_CLOCKSOURCE: {
+					struct clockSourceDescp* clkSrcDescp = (struct clockSourceDescp*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes)];
+					avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Clock Source (%d) Descriptor", avb_change_to_big_endian_u16(rdCmd->descIdx));
+
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct clockSourceDescp)), 1);
+					clkSrcDescp->descType = rdCmd->descType;
+					clkSrcDescp->descIdx  = rdCmd->descIdx;
+
+					clkSrcDescp->localizedDescp = avb_change_to_big_endian_u16(0x0004 + avb_change_to_big_endian_u16(rdCmd->descIdx));
+
+					clkSrcDescp->clockSourceId[0] = avdecc->sd.srcmac[0];
+					clkSrcDescp->clockSourceId[1] = avdecc->sd.srcmac[1];
+					clkSrcDescp->clockSourceId[2] = avdecc->sd.srcmac[2];
+					clkSrcDescp->clockSourceId[3] = avdecc->sd.srcmac[3];
+					clkSrcDescp->clockSourceId[4] = avdecc->sd.srcmac[4];
+					clkSrcDescp->clockSourceId[5] = avdecc->sd.srcmac[5];
+					clkSrcDescp->clockSourceId[6] = 0;
+					clkSrcDescp->clockSourceId[7] = (u8)avb_change_to_big_endian_u16(rdCmd->descIdx);
+
+					if(avb_change_to_big_endian_u16(rdCmd->descIdx) == 0) {
+					  clkSrcDescp->clockSourcFlags = avb_change_to_big_endian_u16(0x00);
+					  clkSrcDescp->clockSourceType = avb_change_to_big_endian_u16(0x00);
+					  clkSrcDescp->clockSourceLocType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_AUDIO_UNIT);
+					} else if(avb_change_to_big_endian_u16(rdCmd->descIdx) == 1) {
+					  clkSrcDescp->clockSourcFlags = avb_change_to_big_endian_u16(0x00);
+					  clkSrcDescp->clockSourceType = avb_change_to_big_endian_u16(0x01);
+					  clkSrcDescp->clockSourceLocType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_JACK_IP);
+					} else {
+					  clkSrcDescp->clockSourcFlags = avb_change_to_big_endian_u16(0x02);
+					  clkSrcDescp->clockSourceType = avb_change_to_big_endian_u16(0x02);
+					  clkSrcDescp->clockSourceLocType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_IP);
+					}
+
+					descpSize = sizeof(struct clockSourceDescp); maxDescIdx = 2;
+					break;
+				} case AVB_AEM_DESCP_CLOCK_DOMAIN: {
+					struct clockDomainDescp* clkDoDescp = (struct clockDomainDescp*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes)];
+					avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Clock Domain (%d) Descriptor", avb_change_to_big_endian_u16(rdCmd->descIdx));
+
+					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct clockDomainDescp)), 1);
+					clkDoDescp->descType = rdCmd->descType;
+					clkDoDescp->descIdx  = rdCmd->descIdx;
+
+					clkDoDescp->localizedDescp = avb_change_to_big_endian_u16(0x0000);
+
+					clkDoDescp->currClockSource = avb_change_to_big_endian_u16(0x00);
+					clkDoDescp->clockSourcesOffset = avb_change_to_big_endian_u16(0x4c);
+					clkDoDescp->clockSourcesCount = avb_change_to_big_endian_u16(3);
+					clkDoDescp->clockSources[0] = avb_change_to_big_endian_u16(0);
+					clkDoDescp->clockSources[1] = avb_change_to_big_endian_u16(1);
+					clkDoDescp->clockSources[2] = avb_change_to_big_endian_u16(2);
+
+					descpSize = sizeof(struct clockDomainDescp);
 					break;
 				} case AVB_AEM_DESCP_AVBINTERFACE: {
 					struct avbIfDescp* avbIfDescp = (struct avbIfDescp*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct readDescpRes)];
@@ -1346,8 +1399,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct avbIfDescp)), 1);
 					avbIfDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_AVBINTERFACE);
 					avbIfDescp->descIdx  = 0;
-					strcpy(&avbIfDescp->ifName[0], "avbif");
-					avbIfDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					avbIfDescp->localizedDescp = avb_change_to_big_endian_u16(0xffff);
 					avbIfDescp->macAddr[0] = avdecc->sd.srcmac[0];
 					avbIfDescp->macAddr[1] = avdecc->sd.srcmac[1];
 					avbIfDescp->macAddr[2] = avdecc->sd.srcmac[2];
@@ -1400,6 +1452,11 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					stringsDescp->descIdx  = 0;
 					strcpy(&stringsDescp->strings[0][0], "FH-Kiel");
 					strcpy(&stringsDescp->strings[1][0], "BBB");
+					strcpy(&stringsDescp->strings[2][0], "Stream IP");
+					strcpy(&stringsDescp->strings[3][0], "Stream OP");
+					strcpy(&stringsDescp->strings[4][0], "Domain Clock");
+					strcpy(&stringsDescp->strings[5][0], "External Clock");
+					strcpy(&stringsDescp->strings[6][0], "Stream Clock");
 					descpSize = sizeof(struct stringsDescp);
 					break;
 				} case AVB_AEM_DESCP_STREAM_IP: {
@@ -1410,12 +1467,11 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct streamDescp)), 1);
 					strmOpDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_IP);
 					strmOpDescp->descIdx  = 0;
-					strcpy(&strmOpDescp->objName[0], "default");
-					strmOpDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					strmOpDescp->localizedDescp = avb_change_to_big_endian_u16(0x0002);
 					strmOpDescp->clockDomainIdx = 0;
-					strmOpDescp->streamFlags = avb_change_to_big_endian_u16(0x0006);
+					strmOpDescp->streamFlags = avb_change_to_big_endian_u16(0x0003);
 					strmOpDescp->avbIfIdx = 0;
-					strmOpDescp->bufSize = avb_change_to_big_endian(100000);
+					strmOpDescp->bufSize = avb_change_to_big_endian(583333);
 					strmOpDescp->fmtsCount = avb_change_to_big_endian_u16(AVB_AEM_MAX_SUPP_FORMATS);
 					strmOpDescp->fmtsOff = avb_change_to_big_endian_u16(132);
 
@@ -1434,12 +1490,25 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					strmOpDescp->suppFmts[0].fmt.iec.subType = 0;
 					strmOpDescp->suppFmts[0].fmt.iec.b1.sf = 0x80;
 					strmOpDescp->suppFmts[0].fmt.iec.b1.fmt = strmOpDescp->suppFmts[0].fmt.iec.b1.fmt | 0x20;
-					strmOpDescp->suppFmts[0].fmt.iec.b2.fdf_sfc = 0x02;
+					strmOpDescp->suppFmts[0].fmt.iec.b2.fdf_sfc = 0x01;
 					strmOpDescp->suppFmts[0].fmt.iec.dbs = 0x08;
 					strmOpDescp->suppFmts[0].fmt.iec.b4.b = 0x60;
 					strmOpDescp->suppFmts[0].fmt.iec.label_mbla_cnt = 0x08;
 #endif
-					memcpy(&strmOpDescp->currFmt, &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[1], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[2], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[3], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[4], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[5], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+
+					strmOpDescp->suppFmts[1].fmt.iec.b2.fdf_sfc = 0x02;
+					strmOpDescp->suppFmts[2].fmt.iec.b2.fdf_sfc = 0x03;
+					strmOpDescp->suppFmts[3].fmt.iec.b2.fdf_sfc = 0x04;
+					strmOpDescp->suppFmts[4].fmt.iec.b2.fdf_sfc = 0x05;
+					strmOpDescp->suppFmts[5].fmt.iec.b2.fdf_sfc = 0x06;
+
+					memcpy(&strmOpDescp->currFmt, &strmOpDescp->suppFmts[1], sizeof(struct streamFormat));
+
 					descpSize = sizeof(struct streamDescp);
 					break;
 				} case AVB_AEM_DESCP_STREAM_OP: {
@@ -1450,12 +1519,11 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct readDescpRes) + sizeof(struct streamDescp)), 1);
 					strmOpDescp->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_STREAM_OP);
 					strmOpDescp->descIdx  = 0;
-					strcpy(&strmOpDescp->objName[0], "default");
-					strmOpDescp->localizedDescp = avb_change_to_big_endian_u16(0x0007);
+					strmOpDescp->localizedDescp = avb_change_to_big_endian_u16(0x0003);
 					strmOpDescp->clockDomainIdx = 0;
-					strmOpDescp->streamFlags = avb_change_to_big_endian_u16(0x0006);
+					strmOpDescp->streamFlags = avb_change_to_big_endian_u16(0x0002);
 					strmOpDescp->avbIfIdx = 0;
-					strmOpDescp->bufSize = avb_change_to_big_endian(100000);
+					strmOpDescp->bufSize = avb_change_to_big_endian(583333);
 					strmOpDescp->fmtsCount = avb_change_to_big_endian_u16(AVB_AEM_MAX_SUPP_FORMATS);
 					strmOpDescp->fmtsOff = avb_change_to_big_endian_u16(132);
 
@@ -1474,12 +1542,25 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 					strmOpDescp->suppFmts[0].fmt.iec.subType = 0;
 					strmOpDescp->suppFmts[0].fmt.iec.b1.sf = 0x80;
 					strmOpDescp->suppFmts[0].fmt.iec.b1.fmt = strmOpDescp->suppFmts[0].fmt.iec.b1.fmt | 0x20;
-					strmOpDescp->suppFmts[0].fmt.iec.b2.fdf_sfc = 0x02;
+					strmOpDescp->suppFmts[0].fmt.iec.b2.fdf_sfc = 0x01;
 					strmOpDescp->suppFmts[0].fmt.iec.dbs = 0x08;
 					strmOpDescp->suppFmts[0].fmt.iec.b4.b = 0x60;
 					strmOpDescp->suppFmts[0].fmt.iec.label_mbla_cnt = 0x08;
 #endif
-					memcpy(&strmOpDescp->currFmt, &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[1], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[2], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[3], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[4], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+					memcpy(&strmOpDescp->suppFmts[5], &strmOpDescp->suppFmts[0], sizeof(struct streamFormat));
+
+					strmOpDescp->suppFmts[1].fmt.iec.b2.fdf_sfc = 0x02;
+					strmOpDescp->suppFmts[2].fmt.iec.b2.fdf_sfc = 0x03;
+					strmOpDescp->suppFmts[3].fmt.iec.b2.fdf_sfc = 0x04;
+					strmOpDescp->suppFmts[4].fmt.iec.b2.fdf_sfc = 0x05;
+					strmOpDescp->suppFmts[5].fmt.iec.b2.fdf_sfc = 0x06;
+
+					memcpy(&strmOpDescp->currFmt, &strmOpDescp->suppFmts[1], sizeof(struct streamFormat));
+
 					descpSize = sizeof(struct streamDescp);
 					break;
 				} default: {
@@ -1513,18 +1594,29 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 
 			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Entiry Acquire");
 			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acquireEntCmd);
-			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AEM_CMD_ENTITY_ACQUIRE, AVB_AEM_RES_SUCCESS, (sizeof(struct acquireEntCmd)), 1);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct acquireEntCmd)), 1);
 
 			memcpy(&acqEntCmd->ownerId[0], &acqEntCmd->hdr.ctrlEntityId[0], 8);
 			acqEntCmd->flags = 0;
 			acqEntCmd->descType = avb_change_to_big_endian_u16(AVB_AEM_DESCP_ENTITY);
 			acqEntCmd->descIdx = 0;
 			
-			avbdevice.msrpwd = avb_init_and_queue_work(AVB_DELAY_WORK_MSRP, (void*)&avbdevice.msrp, 100);
+			avbdevice.msrp.started = true;
+			avb_msrp_talkerdeclarations(&avbdevice.msrp, true, avbdevice.msrp.txState);
+			break;
 		}  case AVB_AEM_CMD_ENTITY_AVAILABLE: {
-			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Entiry Available");
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Entity Available");
 			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct aemCmd);
 			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct aemCmd)), 1);
+			break;
+		} case AVB_AEM_CMD_SET_STREAM_FORMAT: {
+			struct setStreamFormatCmd* reqStFmt = (struct setStreamFormatCmd*)&avdecc->sd.rxBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)]; 
+			struct setStreamFormatCmd* stFmt = (struct setStreamFormatCmd*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)]; 
+
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Set Stream Format");
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct setStreamFormatCmd);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, (sizeof(struct setStreamFormatCmd)), 1);
+			memcpy(stFmt, reqStFmt, sizeof(struct setStreamFormatCmd));
 			break;
 		} case AVB_AEM_CMD_GET_STREAM_INFO: {
 			struct streamInfo* getStreamInfoReq = (struct streamInfo*)&avdecc->sd.rxBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
@@ -1577,7 +1669,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 			
 			avb_log(AVB_KERN_INFO, KERN_INFO "avb_aecp_readResponse for Get Counters command");
 
-			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AEM_CMD_GET_COUNTERS, AVB_AEM_RES_SUCCESS, sizeof(struct streamInfo), 1);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_SUCCESS, sizeof(struct streamInfo), 1);
 
 			countersDescp->descType = countersReq->descType;
 			countersDescp->descIdx  = 0;
@@ -1593,7 +1685,7 @@ static void avb_avdecc_aecp_respondToAEMCmd(struct avdecc* avdecc)
 
 			if(gtStrInfoCmd->descIdx > 0) {
 				txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct getCountersCmd);
-				avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AEM_CMD_GET_COUNTERS, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct getCountersCmd)), 1);
+				avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_AECP, AVB_AECP_MSGTYPE_AEM_RESPONSE, AVB_AEM_RES_NO_SUCH_DESCRIPTOR, (sizeof(struct getCountersCmd)), 1);
 			} else {
 				txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct countersDescp);
 			}
@@ -1638,40 +1730,185 @@ static void avb_avdecc_aecp_respondToCmd(struct avdecc* avdecc)
 	}
 }
 
+static void avb_avdecc_acmp_connectTxCmd(struct avdecc* avdecc)
+{
+	int err = 0;
+	u16 txSize = 0;
+	struct acmPdu* txacmpdu = (struct acmPdu*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
+
+	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Send Connect TX command");
+	avb_acdecc_initAndFillEthHdr(avdecc, 1);
+	avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_CONNECT_TX_CMD, AVB_ACMP_STATUS_SUCCESS, sizeof(struct acmPdu), 0);
+	txacmpdu->streamDestMAC[0] = 0x91;
+	txacmpdu->streamDestMAC[1] = 0xe0;
+	txacmpdu->streamDestMAC[2] = 0xf0;
+	txacmpdu->streamDestMAC[3] = 0x00;
+	txacmpdu->streamDestMAC[4] = 0x33;
+	txacmpdu->streamDestMAC[5] = 0x4b;
+	txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
+	txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
+	
+	if(txSize > 0) {
+		avdecc->sd.txiov.iov_base = avdecc->sd.txBuf;
+		avdecc->sd.txiov.iov_len = txSize;
+		iov_iter_init(&avdecc->sd.txMsgHdr.msg_iter, WRITE | ITER_KVEC, &avdecc->sd.txiov, 1, txSize);
+
+		if ((err = sock_sendmsg(avdecc->sd.sock, &avdecc->sd.txMsgHdr)) <= 0) {
+			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_avdecc_acmp_respondToAEMCmd Socket transmission fails %d \n", err);
+			return;
+		}	
+	}
+}
+
+static void avb_avdecc_acmp_connectRxCmd(struct avdecc* avdecc)
+{
+	int err = 0;
+	u16 txSize = 0;
+	struct acmPdu* txacmpdu = (struct acmPdu*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
+
+	avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Send Connect RX command");
+	avb_acdecc_initAndFillEthHdr(avdecc, 1);
+	avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_CONNECT_RX_CMD, AVB_ACMP_STATUS_SUCCESS, sizeof(struct acmPdu), 0);
+	txacmpdu->streamDestMAC[0] = 0x91;
+	txacmpdu->streamDestMAC[1] = 0xe0;
+	txacmpdu->streamDestMAC[2] = 0xf0;
+	txacmpdu->streamDestMAC[3] = 0x00;
+	txacmpdu->streamDestMAC[4] = 0x33;
+	txacmpdu->streamDestMAC[5] = 0x4c;
+	txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
+	txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
+	
+	if(txSize > 0) {
+		avdecc->sd.txiov.iov_base = avdecc->sd.txBuf;
+		avdecc->sd.txiov.iov_len = txSize;
+		iov_iter_init(&avdecc->sd.txMsgHdr.msg_iter, WRITE | ITER_KVEC, &avdecc->sd.txiov, 1, txSize);
+
+		if ((err = sock_sendmsg(avdecc->sd.sock, &avdecc->sd.txMsgHdr)) <= 0) {
+			avb_log(AVB_KERN_WARN, KERN_WARNING "avb_avdecc_acmp_respondToAEMCmd Socket transmission fails %d \n", err);
+			return;
+		}	
+	}
+}
+
 static void avb_avdecc_acmp_respondToCmd(struct avdecc* avdecc)
 {
 	int err = 0;
+	int dest = 0;
 	u16 txSize = 0;
 	struct avtPduControlHdr *hdr = (struct avtPduControlHdr*)&avdecc->sd.rxBuf[sizeof(struct ethhdr)];
 	struct acmPdu* rxacmpdu = (struct acmPdu*)&avdecc->sd.rxBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
 	struct acmPdu* txacmpdu = (struct acmPdu*)&avdecc->sd.txBuf[sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr)];
 
+	if((rxacmpdu->talkerEntityId[0] == avdecc->sd.srcmac[0]) &&
+	   (rxacmpdu->talkerEntityId[1] == avdecc->sd.srcmac[1]) &&
+	   (rxacmpdu->talkerEntityId[2] == avdecc->sd.srcmac[2]) &&
+	   (rxacmpdu->talkerEntityId[3] == 0xff) &&
+	   (rxacmpdu->talkerEntityId[4] == 0xfe) &&
+	   (rxacmpdu->talkerEntityId[5] == avdecc->sd.srcmac[3]) &&
+	   (rxacmpdu->talkerEntityId[6] == avdecc->sd.srcmac[4]) &&
+	   (rxacmpdu->talkerEntityId[7] == avdecc->sd.srcmac[5])) {
+		dest++;
+	} else if((rxacmpdu->listenerEntityId[0] == avdecc->sd.srcmac[0]) &&
+	   	  (rxacmpdu->listenerEntityId[1] == avdecc->sd.srcmac[1]) &&
+	   	  (rxacmpdu->listenerEntityId[2] == avdecc->sd.srcmac[2]) &&
+	   	  (rxacmpdu->listenerEntityId[3] == 0xff) &&
+	   	  (rxacmpdu->listenerEntityId[4] == 0xfe) &&
+	   	  (rxacmpdu->listenerEntityId[5] == avdecc->sd.srcmac[3]) &&
+	   	  (rxacmpdu->listenerEntityId[6] == avdecc->sd.srcmac[4]) &&
+	   	  (rxacmpdu->listenerEntityId[7] == avdecc->sd.srcmac[5])) {
+		dest--;
+	} else {
+		dest = 0;
+	}
+
+	if(((hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_GET_TX_STATE_CMD)  || (hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_CONNECT_TX_CMD) ||
+	    (hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_DISCONNECT_TX_CMD) || (hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_GET_TX_CONN_CMD)) && (dest <= 0)) {
+		avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_aecp_respondToCmd ACMP TX cmd: %d not for us", hdr->h.f.b1.msgType);
+		return;
+	}
+
+	if(((hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_GET_RX_STATE_CMD) || (hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_CONNECT_RX_CMD) ||
+	    (hdr->h.f.b1.msgType == AVB_ACMP_MSGTYPE_DISCONNECT_RX_CMD)) && (dest >= 0)) {
+		avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_aecp_respondToCmd ACMP RX cmd: %d not for us", hdr->h.f.b1.msgType);
+		return;
+	}
+
 	switch(hdr->h.f.b1.msgType) {
 		case AVB_ACMP_MSGTYPE_GET_TX_STATE_CMD:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Get TX state command");
 			avb_acdecc_initAndFillEthHdr(avdecc, 1);
-			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_GET_TX_STATE_RESP, AVB_ACMP_STATUS_NOT_CONNECTED, sizeof(struct acmPdu), 0);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_GET_TX_STATE_RESP, avdecc->acmpTxState, sizeof(struct acmPdu), 0);
 			memcpy(txacmpdu, rxacmpdu, sizeof(struct acmPdu));
 			txacmpdu->streamDestMAC[0] = 0x91;
 			txacmpdu->streamDestMAC[1] = 0xe0;
 			txacmpdu->streamDestMAC[2] = 0xf0;
 			txacmpdu->streamDestMAC[3] = 0x00;
-			txacmpdu->streamDestMAC[4] = 0x3f;
-			txacmpdu->streamDestMAC[5] = 0xf1;
-			txacmpdu->flags = avb_change_to_big_endian_u16(0x0009);
+			txacmpdu->streamDestMAC[4] = 0x33;
+			txacmpdu->streamDestMAC[5] = 0x4b;
+			txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
 			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
 			break;
 
 		case AVB_ACMP_MSGTYPE_GET_RX_STATE_CMD:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Get RX state command");
 			avb_acdecc_initAndFillEthHdr(avdecc, 1);
-			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_GET_RX_STATE_RESP, AVB_ACMP_STATUS_NOT_CONNECTED, sizeof(struct acmPdu), 0);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_GET_RX_STATE_RESP, avdecc->acmpRxState, sizeof(struct acmPdu), 0);
 			memcpy(txacmpdu, rxacmpdu, sizeof(struct acmPdu));
 			txacmpdu->streamDestMAC[0] = 0x91;
 			txacmpdu->streamDestMAC[1] = 0xe0;
 			txacmpdu->streamDestMAC[2] = 0xf0;
 			txacmpdu->streamDestMAC[3] = 0x00;
-			txacmpdu->streamDestMAC[4] = 0x3f;
-			txacmpdu->streamDestMAC[5] = 0xf1;
-			txacmpdu->flags = avb_change_to_big_endian_u16(0x0009);
+			txacmpdu->streamDestMAC[4] = 0x33;
+			txacmpdu->streamDestMAC[5] = 0x4c;
+			txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
+			break;
+
+		case AVB_ACMP_MSGTYPE_CONNECT_TX_CMD:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Connect TX command");
+			avb_acdecc_initAndFillEthHdr(avdecc, 1);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_CONNECT_TX_RESP, AVB_ACMP_STATUS_SUCCESS, sizeof(struct acmPdu), 0);
+			memcpy(txacmpdu, rxacmpdu, sizeof(struct acmPdu));
+			txacmpdu->streamDestMAC[0] = 0x91;
+			txacmpdu->streamDestMAC[1] = 0xe0;
+			txacmpdu->streamDestMAC[2] = 0xf0;
+			txacmpdu->streamDestMAC[3] = 0x00;
+			txacmpdu->streamDestMAC[4] = 0x33;
+			txacmpdu->streamDestMAC[5] = 0x4b;
+			txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
+			break;
+
+		case AVB_ACMP_MSGTYPE_DISCONNECT_TX_CMD:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Disconnect TX command");
+			avb_acdecc_initAndFillEthHdr(avdecc, 1);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_DISCONNECT_TX_RESP, AVB_ACMP_STATUS_SUCCESS, sizeof(struct acmPdu), 0);
+			memcpy(txacmpdu, rxacmpdu, sizeof(struct acmPdu));
+			txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
+			break;
+
+		case AVB_ACMP_MSGTYPE_CONNECT_RX_CMD:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Connect RX command");
+			avb_acdecc_initAndFillEthHdr(avdecc, 1);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_CONNECT_RX_RESP, AVB_ACMP_STATUS_SUCCESS, sizeof(struct acmPdu), 0);
+			memcpy(txacmpdu, rxacmpdu, sizeof(struct acmPdu));
+			txacmpdu->streamDestMAC[0] = 0x91;
+			txacmpdu->streamDestMAC[1] = 0xe0;
+			txacmpdu->streamDestMAC[2] = 0xf0;
+			txacmpdu->streamDestMAC[3] = 0x00;
+			txacmpdu->streamDestMAC[4] = 0x33;
+			txacmpdu->streamDestMAC[5] = 0x4c;
+			txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
+			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
+			break;
+
+		case AVB_ACMP_MSGTYPE_DISCONNECT_RX_CMD:
+			avb_log(AVB_KERN_INFO, KERN_INFO "avb_avdecc_adp_respondToCmd Disconnect RX command");
+			avb_acdecc_initAndFillEthHdr(avdecc, 1);
+			avb_acdecc_fillAVTPCtrlHdr(avdecc, AVB_AVTP_SUBTYPE_ACMP, AVB_ACMP_MSGTYPE_DISCONNECT_RX_RESP, AVB_ACMP_STATUS_SUCCESS, sizeof(struct acmPdu), 0);
+			memcpy(txacmpdu, rxacmpdu, sizeof(struct acmPdu));
+			txacmpdu->flags = avb_change_to_big_endian_u16(0x0000);
 			txSize = sizeof(struct ethhdr) + sizeof(struct avtPduControlHdr) + sizeof(struct acmPdu);
 			break;
 
@@ -2068,26 +2305,28 @@ static void avbWqFn(struct work_struct *work)
 		if(wd->dw.msrp->initialized == false) {
 			queue_delayed_work(avbdevice.wq, (struct delayed_work*)avbdevice.msrpwd, 10000);
 		} else {
-			do {
-				err = avb_msrp_listen(wd->dw.msrp);
-				rxCount += ((err > 0)?(1):(0));
-			} while(err > 0);
+			if(wd->dw.msrp->started == true) {
+				do {
+					err = avb_msrp_listen(wd->dw.msrp);
+					rxCount += ((err > 0)?(1):(0));
+				} while(err > 0);
 
-			if(rxCount == 0) {
-				if((wd->dw.msrp->txState == MSRP_DECLARATION_STATE_NONE) || (wd->dw.msrp->txState == MSRP_DECLARATION_STATE_READY)) {
-					//avb_msrp_talkerdeclarations(wd->dw.msrp, true, wd->dw.msrp->txState);
-				}
-			} else {
-				if((wd->dw.msrp->txState == MSRP_DECLARATION_STATE_NONE) || (wd->dw.msrp->txState == MSRP_DECLARATION_STATE_UNKNOWN)) {
-					//avb_msrp_talkerdeclarations(wd->dw.msrp, true, wd->dw.msrp->txState);
-				}
+				if(rxCount == 0) {
+					if((wd->dw.msrp->txState == MSRP_DECLARATION_STATE_NONE) || (wd->dw.msrp->txState == MSRP_DECLARATION_STATE_READY)) {
+						avb_msrp_talkerdeclarations(wd->dw.msrp, true, wd->dw.msrp->txState);
+					}
+				} else {
+					if((wd->dw.msrp->txState == MSRP_DECLARATION_STATE_NONE) || (wd->dw.msrp->txState == MSRP_DECLARATION_STATE_UNKNOWN)) {
+						avb_msrp_talkerdeclarations(wd->dw.msrp, true, wd->dw.msrp->txState);
+					}
 
-				if((wd->dw.msrp->rxState == MSRP_DECLARATION_STATE_NONE) || (wd->dw.msrp->rxState == MSRP_DECLARATION_STATE_READY)) {
-					avb_msrp_listenerdeclarations(wd->dw.msrp, true, wd->dw.msrp->rxState);
-				}
+					if((wd->dw.msrp->rxState == MSRP_DECLARATION_STATE_NONE) || (wd->dw.msrp->rxState == MSRP_DECLARATION_STATE_READY)) {
+						avb_msrp_listenerdeclarations(wd->dw.msrp, true, wd->dw.msrp->rxState);
+					}
 
-				wd->dw.msrp->txState = ((wd->dw.msrp->txState == MSRP_DECLARATION_STATE_UNKNOWN)?(MSRP_DECLARATION_STATE_NONE):(wd->dw.msrp->txState));
-				wd->dw.msrp->rxState = ((wd->dw.msrp->rxState == MSRP_DECLARATION_STATE_UNKNOWN)?(MSRP_DECLARATION_STATE_NONE):(wd->dw.msrp->rxState));
+					wd->dw.msrp->txState = ((wd->dw.msrp->txState == MSRP_DECLARATION_STATE_UNKNOWN)?(MSRP_DECLARATION_STATE_NONE):(wd->dw.msrp->txState));
+					wd->dw.msrp->rxState = ((wd->dw.msrp->rxState == MSRP_DECLARATION_STATE_UNKNOWN)?(MSRP_DECLARATION_STATE_NONE):(wd->dw.msrp->rxState));
+				}
 			}
 
 			avb_msrp_domaindeclarations(wd->dw.msrp);
@@ -2356,7 +2595,7 @@ static int __init alsa_avb_init(void)
 			return -1;
 		}
 
-		/* avbdevice.msrpwd = avb_init_and_queue_work(AVB_DELAY_WORK_MSRP, (void*)&avbdevice.msrp, 100); */
+		avbdevice.msrpwd = avb_init_and_queue_work(AVB_DELAY_WORK_MSRP, (void*)&avbdevice.msrp, 100);
 		avbdevice.avdeccwd = avb_init_and_queue_work(AVB_DELAY_WORK_AVDECC, (void*)&avbdevice.avdecc, 100);
 
 		avb_log(AVB_KERN_NOT, KERN_NOTICE "alsa_avb_init done err: %d, numcards: %d", err, numcards);	

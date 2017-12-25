@@ -117,6 +117,7 @@
 #define AVB_AEM_CMD_WRITE_DESCP                 (0x05)
 #define AVB_AEM_CMD_SET_CONFIG                  (0x06)
 #define AVB_AEM_CMD_GET_CONFIG                  (0x07)
+#define AVB_AEM_CMD_SET_STREAM_FORMAT           (0x08)
 #define AVB_AEM_CMD_SET_STREAM_INFO             (0x0e)
 #define AVB_AEM_CMD_GET_STREAM_INFO             (0x0f)
 #define AVB_AEM_CMD_REGISTER_UNSOLICITED_NOTIFICATION	(0x24)
@@ -130,6 +131,7 @@
 #define AVB_AEM_DESCP_JACK_IP                   (0x07)
 #define AVB_AEM_DESCP_JACK_OP                   (0x08)
 #define AVB_AEM_DESCP_AVBINTERFACE              (0x09)
+#define AVB_AEM_DESCP_CLOCKSOURCE               (0x0a)
 #define AVB_AEM_DESCP_LOCALE                    (0x0c)
 #define AVB_AEM_DESCP_STRINGS                   (0x0d)
 #define AVB_AEM_DESCP_STREAM_PORT_IP            (0x0e)
@@ -138,16 +140,17 @@
 #define AVB_AEM_DESCP_EXT_PORT_OP               (0x11) 
 #define AVB_AEM_DESCP_AUDIO_CLUSTER             (0x14)
 #define AVB_AEM_DESCP_AUDIO_MAP                 (0x17)
+#define AVB_AEM_DESCP_CLOCK_DOMAIN              (0x24)
 #define AVB_AEM_DESCP_INVALID                   (0xffff)  
 
 #define AVB_AEM_RES_SUCCESS                     (0x00) 
 #define AVB_AEM_RES_NOT_IMPLEMENTED             (0x01)
 #define AVB_AEM_RES_NO_SUCH_DESCRIPTOR          (0x02)    
 
-#define AVB_AEM_MAX_DESCP_COUNT                 (4)  
+#define AVB_AEM_MAX_DESCP_COUNT                 (7)  
 
 #define AVB_AEM_STREAM_FORMAT_AVTP              (0x02)
-#define AVB_AEM_MAX_SUPP_FORMATS                (1)
+#define AVB_AEM_MAX_SUPP_FORMATS                (6)
 
 #define AVB_ACMP_MSGTYPE_CONNECT_TX_CMD         (0x00)
 #define AVB_ACMP_MSGTYPE_CONNECT_TX_RESP        (0x01)
@@ -308,6 +311,58 @@ struct maapPdu {
 	u16 conflictCount;
 };
 
+struct avtpStreamFormat {
+	u8 subType;
+	union sfb1 {
+		u8 res1;        /* 4 bit reserved */
+		u8 nsr;	        /* 4 bit Nominal sample rate */
+	} b1;
+	u8 format;
+	u8 bitDepth;
+	u8 cpf;                 /* First 8 bits of channels per frame */
+	union sfb5 {
+		u8 cpf;	        /* Last 2 bits of channels per frame */
+		u8 spf;	        /* First 6 bits of samples per frame */	
+	} b5;
+	union sfb6 {
+		u8 spf;	        /* Last 4 bits of samples per frame */
+		u8 res2;	/* First 4 bits of reserved */	
+	} b6;
+	u8 res2;    		/* Last 8 bits of reserved */
+};
+
+struct iecStreamFormat {
+	u8 subType;
+	union isfb1 {
+		u8 sf;          /* 1 bit stream format */
+		u8 fmt;         /* 6 bit fomrat */
+		u8 r;           /* 1 bit reserved */
+	} b1;
+	union isfb2 {
+		u8 fdf_evt;     /* 5 bits */
+		u8 fdf_sfc;	/* 3 bits */
+	} b2;
+	u8 dbs;
+	union isfb4 {
+		u8 b;		/* 1 bit */
+		u8 nb;		/* 1 bit */
+		u8 res;		/* 6 bits */
+	} b4;
+	u8 label_iec_60958_cnt;
+	u8 label_mbla_cnt;
+	union isfb7 {
+		u8 label_midi_cnt;	/* 4 bits */
+		u8 label_smptecnt;	/* 4 bits */
+	} b7;
+};
+
+struct streamFormat {
+	union fmt {
+		struct avtpStreamFormat avtp;
+		struct iecStreamFormat iec;
+	} fmt;
+};
+
 struct acmPdu {
 	u8 ctrlEntityId[8];
 	u8 talkerEntityId[8];
@@ -342,6 +397,13 @@ struct readDescpCmd {
 	u16 res;
 	u16 descType;
 	u16 descIdx;
+};
+
+struct setStreamFormatCmd {
+	struct aemCmd hdr;
+	u16 descType;
+	u16 descIdx;
+	struct streamFormat fmt;
 };
 
 struct readDescpRes {
@@ -429,7 +491,7 @@ struct audioUnitDescp {
 	u32 currentSamplingRate;
 	u16 samplingRatesOffset;
 	u16 samplingRatesCount;
-	u32 samplingRates[10];
+	u32 samplingRates[6];
 };
 
 struct streamPortDescp {
@@ -499,6 +561,29 @@ struct audioMapDescp {
 	struct audMapFmt map[8];
 };
 
+struct clockSourceDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 clockSourcFlags;
+	u16 clockSourceType;
+	u8 clockSourceId[8];
+	u16 clockSourceLocType;
+	u16 clockSourceLocIdx;
+};
+
+struct clockDomainDescp {
+	u16 descType;
+	u16 descIdx;
+	u8 objName[64];
+	u16 localizedDescp;
+	u16 currClockSource;
+	u16 clockSourcesOffset;
+	u16 clockSourcesCount;
+	u16 clockSources[3];
+};
+
 struct avbIfDescp {
 	u16 descType;
 	u16 descIdx;
@@ -531,58 +616,6 @@ struct stringsDescp {
 	u16 descType;
 	u16 descIdx;
 	u8 strings[7][64];
-};
-
-struct avtpStreamFormat {
-	u8 subType;
-	union sfb1 {
-		u8 res1;        /* 4 bit reserved */
-		u8 nsr;	        /* 4 bit Nominal sample rate */
-	} b1;
-	u8 format;
-	u8 bitDepth;
-	u8 cpf;                 /* First 8 bits of channels per frame */
-	union sfb5 {
-		u8 cpf;	        /* Last 2 bits of channels per frame */
-		u8 spf;	        /* First 6 bits of samples per frame */	
-	} b5;
-	union sfb6 {
-		u8 spf;	        /* Last 4 bits of samples per frame */
-		u8 res2;	/* First 4 bits of reserved */	
-	} b6;
-	u8 res2;    		/* Last 8 bits of reserved */
-};
-
-struct iecStreamFormat {
-	u8 subType;
-	union isfb1 {
-		u8 sf;          /* 1 bit stream format */
-		u8 fmt;         /* 6 bit fomrat */
-		u8 r;           /* 1 bit reserved */
-	} b1;
-	union isfb2 {
-		u8 fdf_evt;     /* 5 bits */
-		u8 fdf_sfc;	/* 3 bits */
-	} b2;
-	u8 dbs;
-	union isfb4 {
-		u8 b;		/* 1 bit */
-		u8 nb;		/* 1 bit */
-		u8 res;		/* 6 bits */
-	} b4;
-	u8 label_iec_60958_cnt;
-	u8 label_mbla_cnt;
-	union isfb7 {
-		u8 label_midi_cnt;	/* 4 bits */
-		u8 label_smptecnt;	/* 4 bits */
-	} b7;
-};
-
-struct streamFormat {
-	union fmt {
-		struct avtpStreamFormat avtp;
-		struct iecStreamFormat iec;
-	} fmt;
 };
 
 struct streamDescp {
@@ -776,6 +809,8 @@ struct socketdata {
 
 struct avdecc {
 	bool initialized;
+	u8 acmpTxState;
+	u8 acmpRxState;
 	u32 adpAvaiIdx;
 	u64 lastADPAdvJiffy;
 	struct socketdata sd;
@@ -783,6 +818,7 @@ struct avdecc {
 
 struct msrp {
 	bool initialized;
+	bool started;
 	int  rxState;
 	int  txState;
 	struct socketdata sd;
